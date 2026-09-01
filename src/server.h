@@ -145,6 +145,9 @@ typedef struct
 
 // CSQC pvsflags bit
 #define PVSF_NOREMOVE		0x80
+
+// sv_ents.c
+extern sizebuf_t csqcmsgbuffer;
 #endif
 
 #define	NUM_SPAWN_PARMS 16
@@ -364,6 +367,8 @@ typedef struct client_s
 
 #ifdef FTE_PEXT_CSQC
 	qbool			csqcactive;
+	uint64_t		*pendingcsqcbits;	// per-entity CSQC delta bits, size max_net_ents
+	int				max_net_ents;		// actual size of pendingcsqcbits
 #endif
 
 	//===== NETWORK ============
@@ -412,6 +417,12 @@ typedef struct client_s
 		float    last_sidemove;     // Previous frame's sidemove value
 	} safestrafe;
 } client_t;
+
+#ifdef FTE_PEXT_CSQC
+// sv_ents.c
+void SV_ProcessSendFlags (client_t *c);
+void SV_CleanupEnts (void);
+#endif
 
 // a client can leave the server in one of four ways:
 // dropping properly by quiting or disconnecting
