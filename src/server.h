@@ -134,6 +134,22 @@ typedef struct
 } server_t;
 
 #ifdef FTE_PEXT_CSQC
+// CSQC wire message numbers. Not part of upstream qwprot (master still labels
+// 83 as the dead svc_qizmovoice and has no CSQC game-packet/qcrequest messages),
+// so they live here. Numbering matches FTE (fteqw engine/common/protocol.h:
+// svcfte_cgamepacket 83, svcfte_cgamepacket_sized 90, clcfte_qcrequest 81);
+// svc_fte_csqcentities_sized (92) already ships in qwprot master.
+// #ifndef guards keep this compiling once upstream qwprot defines the names.
+#ifndef svc_fte_cgamepacket
+#define svc_fte_cgamepacket		83	// ssqc->csqc game packets, only via multicast
+#endif
+#ifndef svc_fte_cgamepacket_sized
+#define svc_fte_cgamepacket_sized	90	// cgamepacket with a short length prefix (sv_csqcdebug)
+#endif
+#ifndef clcfte_qcrequest
+#define clcfte_qcrequest	81	// CSQC sendevent (client -> server)
+#endif
+
 #define MSG_CSQC		5		// for csqc (pr2_cmds.c WriteDest2)
 
 // per-entity CSQC delta flags, mirror of FTE server.h SENDFLAGS_*
