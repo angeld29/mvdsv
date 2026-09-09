@@ -674,9 +674,13 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 		}
 
 		if (csqcmsgbuffer.overflowed)
-		{	// payload too big for the scratch buffer: drop it and retry next frame
+		{	// payload too big for the per-entity scratch buffer (MAX_DATAGRAM).
+			// It can never fit the client datagram either, so requeueing the
+			// same bits every frame would spin forever (PR228 rev [14]); drop
+			// this entity's update with one warning and wait for a re-dirt.
 			csqcmsgbuffer.overflowed = false;
-			client->pendingcsqcbits[e] = bits;
+			client->pendingcsqcbits[e] = 0;
+			Con_Printf("CSQC: entity %i payload overflowed MSG_CSQC buffer, dropping update\n", e);
 			continue;
 		}
 

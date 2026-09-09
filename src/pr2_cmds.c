@@ -1396,7 +1396,23 @@ void PF2_WriteString(int to, char *data)
 		}
 	}
 	else
-		MSG_WriteString(WriteDest2(to), data);
+	{
+		sizebuf_t *dest = WriteDest2(to);
+		int len = (data && *data) ? (int)strlen(data) + 1 : 1;
+
+		// PR228-rev [14]: SZ_GetSpace Sys_Errors when a *single* write exceeds
+		// maxsize even with allowoverflow (csqcmsgbuffer is only MAX_DATAGRAM).
+		// Such a payload can never fit the client datagram anyway, so for
+		// allowoverflow destinations mark it overflowed and drop it instead of
+		// killing the server. Non-overflow destinations keep the old Sys_Error.
+		if (dest->allowoverflow && len > dest->maxsize)
+		{
+			SZ_Clear(dest);
+			dest->overflowed = true;
+			return;
+		}
+		MSG_WriteString(dest, data);
+	}
 }
 
 void PF2_WriteEntity(int to, int data)
@@ -2014,16 +2030,11 @@ intptr_t PF2_FS_GetFileList(char *path, char *ext,
 }
 
 #ifdef FTE_PEXT_CSQC
-intptr_t EXT_SetSendNeeded(intptr_t *args)
+// Shared broadcast/unicast body of both setsendneeded traps. The mask is
+// already shifted to its final position in the pending word (PRESENT/REMOVED
+// in bits 0..1 are engine-side and must not be touched by mods).
+static void EXT_SetSendNeeded_Apply(unsigned int subject, uint64_t fl, unsigned int to)
 {
-	// trap_SetSendNeeded(subject, flags, to)
-	//   subject - entity number to flag
-	//   flags   - changed-field bits (shifted by SENDFLAGS_SHIFT on resend)
-	//   to      - 0 = broadcast, 1..N = specific client
-	unsigned int subject = (unsigned int)args[1];
-	uint64_t fl = (uint64_t)args[2] << SENDFLAGS_SHIFT;
-	unsigned int to = (unsigned int)args[3];
-
 	if (!to)
 	{	// broadcast
 		unsigned int i;
@@ -2035,10 +2046,25 @@ intptr_t EXT_SetSendNeeded(intptr_t *args)
 	{
 		to--;
 		if (to >= MAX_CLIENTS || !svs.clients[to].pendingcsqcbits || subject >= (unsigned int)svs.clients[to].max_net_ents)
-			return 0;	// some kind of error.
-		else
-			svs.clients[to].pendingcsqcbits[subject] |= fl;
+			return;	// some kind of error.
+		svs.clients[to].pendingcsqcbits[subject] |= fl;
 	}
+}
+
+intptr_t EXT_SetSendNeeded(intptr_t *args)
+{
+	// trap_SetSendNeeded(subject, flags, to)
+	//   subject - entity number to flag
+	//   flags   - changed-field bits (shifted by SENDFLAGS_SHIFT on resend)
+	//   to      - 0 = broadcast, 1..N = specific client
+	unsigned int subject = (unsigned int)args[1];
+	// args[] are intptr_t and both VM backends sign-extend the mod's 32-bit
+	// value (vm_interpreted.c / vm_x86.c movsxd), so a mask with bit31 set must
+	// be re-cast to uint32_t first or it would pollute bits 32..63.
+	uint64_t fl = (uint64_t)(uint32_t)args[2] << SENDFLAGS_SHIFT;
+	unsigned int to = (unsigned int)args[3];
+
+	EXT_SetSendNeeded_Apply(subject, fl, to);
 	return 0;
 }
 
@@ -2056,21 +2082,7 @@ intptr_t EXT_SetSendNeeded64(intptr_t *args)
 	fl &= (SENDFLAGS_USABLE >> SENDFLAGS_SHIFT);
 	fl <<= SENDFLAGS_SHIFT;
 
-	if (!to)
-	{	// broadcast
-		unsigned int i;
-		for (i = 0; i < MAX_CLIENTS; i++)
-			if (svs.clients[i].pendingcsqcbits && subject < (unsigned int)svs.clients[i].max_net_ents)
-				svs.clients[i].pendingcsqcbits[subject] |= fl;
-	}
-	else
-	{
-		to--;
-		if (to >= MAX_CLIENTS || !svs.clients[to].pendingcsqcbits || subject >= (unsigned int)svs.clients[to].max_net_ents)
-			return 0;	// some kind of error.
-		else
-			svs.clients[to].pendingcsqcbits[subject] |= fl;
-	}
+	EXT_SetSendNeeded_Apply(subject, fl, to);
 	return 0;
 }
 

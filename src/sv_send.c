@@ -947,15 +947,15 @@ static void SV_QCStatEval(int type, int statnum, int fieldofs, void *ptr, qbool 
 // clientstat: register a per-client stat from a field offset into the mod's entvars
 void SV_QCStatFieldIdx(int type, unsigned int fieldindex, int statnum)
 {
-	int sz = qcstat_type_size(type);
-
-	// the engine later reads (ent->v + fieldofs) up to sz bytes; make sure the
-	// index stays within one entity's entvars block (pr_edict_size bytes)
-	if (sz < 0 || fieldindex > (unsigned int)pr_edict_size
-		|| (unsigned int)sz > (unsigned int)pr_edict_size - fieldindex)
+	// The engine later reads (ent->v + fieldofs) up to sz bytes. The offset is
+	// NOT validated against pr_edict_size here: mods register clientstats during
+	// GAME_INIT, which runs before PR2_InitProg assigns pr_edict_size (so it is 0
+	// on the first map and all registrations would be dropped) and a gamedir
+	// switch can leave a stale larger value. Bound instead at use time in
+	// SV_UpdateQCStats (PR228 rev [10]). Only the value type is checked here.
+	if (qcstat_type_size(type) < 0)
 	{
-		Con_Printf("csqc clientstat field index %u+%d out of entvars (%d)\n",
-			fieldindex, sz, pr_edict_size);
+		Con_Printf("csqc clientstat type %d unsupported\n", type);
 		return;
 	}
 
@@ -985,7 +985,19 @@ void SV_UpdateQCStats(edict_t *ent, int *stats)
 		qcstat_t *q = &qcstats[i];
 
 		if (q->isfield)
+		{
+			int sz = qcstat_type_size(q->type);
+
+			// PR228 rev [10]: bound at use, not at registration - GAME_INIT runs
+			// before pr_edict_size is assigned, and a gamedir switch may leave a
+			// stale (larger) value. Skip a field that is no longer within the
+			// current entvars block instead of reading out of bounds.
+			if (sz < 0 || q->fieldofs < 0
+				|| (unsigned int)q->fieldofs + (unsigned int)sz > (unsigned int)pr_edict_size)
+				continue;
+
 			eval = (eval_t *)((byte *)ent->v + q->fieldofs);
+		}
 		else
 			eval = (eval_t *)q->ptr;
 
