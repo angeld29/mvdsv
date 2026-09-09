@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #ifndef CLIENTONLY
 #include "qwsvdef.h"
 #include "pr1vm.h"
+#include <limits.h>
 
 dprograms_t		*progs;
 dfunction_t		*pr_functions;
@@ -771,7 +772,7 @@ char *ED_NewString (char *string)
 	int		i,l;
 
 	l = strlen(string) + 1;
-	nuw = (char *) Hunk_Alloc (l);
+	nuw = (char *) Hunk_AllocName (l, "edstring");
 	new_p = nuw;
 
 	for (i=0 ; i< l ; i++)
@@ -1109,6 +1110,22 @@ PR1_LoadProgs
 void PF_clear_strtbl(void);
 
 #ifdef WITH_NQPROGS
+// NQ remap of field offsets (0..105; >105 — identity). Values are the NQ branch
+// of the PR_InitPatchTables formula. Used by the server PR1 instance under NQ.
+static const int fieldofs_nq[106] = {
+	  0,  1,  2,  3,  4,  5,  6,  7,  9, 10,
+	 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	 21, 22, 23, 24, 25,102,103,104, 26, 27,
+	 28, 29, 30, 31, 32, 33, 34, 35, 36, 37,
+	 38, 39, 40, 41, 42, 43, 44, 45, 46, 47,
+	 48, 49, 50, 51, 52, 53, 54, 55, 56, 57,
+	 58, 59, 60, 61, 62, 63, 64, 65, 66, 67,
+	 68, 69, 70,105, 71, 72, 73, 74, 75, 76,
+	 77, 78, 79, 80, 81, 82, 83, 84, 85, 86,
+	 87, 88, 89, 90, 91, 92, 93, 94, 95, 96,
+	 97, 98, 99,100,101,  8,
+};
+
 void PR_InitPatchTables (void)
 {
 	int i;
@@ -1138,20 +1155,16 @@ void PR_InitPatchTables (void)
 
 /*
 =================
-PR1VM_LoadData
+PR1VM_FillAndSwapLumps
 
-PR1VM (S2): fills the instance from a progs (v6) file. Byte-swaps the header and
-lumps; version/CRC validation and error text are left to the PR1_LoadProgs wrapper.
+PR1VM: from an already byte-swapped header fills the instance mirrors and
+byte-swaps the lumps. Common for v6 and v7 (the first 15 header fields match;
+v7 extends them with debug/type fields after entityfields).
 =================
 */
-void PR1VM_LoadData (pr1vm_t *vm, dprograms_t *hdr)
+static void PR1VM_FillAndSwapLumps (pr1vm_t *vm, dprograms_t *p)
 {
 	int i;
-	dprograms_t *p = hdr;
-
-	// byte swap the header
-	for (i = 0; i < (int) sizeof(*p) / 4 ; i++)
-		((int *)p)[i] = LittleLong ( ((int *)p)[i] );
 
 	vm->progs = p;
 	vm->functions = (dfunction_t *)((byte *)p + p->ofs_functions);
@@ -1163,7 +1176,6 @@ void PR1VM_LoadData (pr1vm_t *vm, dprograms_t *hdr)
 	vm->globals = (float *)vm->global_struct;
 	vm->edict_size = p->entityfields * 4;
 
-	// byte swap the lumps
 	for (i = 0; i < p->numstatements; i++)
 	{
 		vm->statements[i].op = LittleShort(vm->statements[i].op);
@@ -1202,6 +1214,26 @@ void PR1VM_LoadData (pr1vm_t *vm, dprograms_t *hdr)
 
 /*
 =================
+PR1VM_LoadData
+
+PR1VM (S2): fills the instance from a progs (v6) file. Byte-swaps the header and
+lumps; version/CRC validation and error text are left to the PR1_LoadProgs wrapper.
+=================
+*/
+void PR1VM_LoadData (pr1vm_t *vm, dprograms_t *hdr)
+{
+	int i;
+	dprograms_t *p = hdr;
+
+	// byte swap the header
+	for (i = 0; i < (int) sizeof(*p) / 4 ; i++)
+		((int *)p)[i] = LittleLong ( ((int *)p)[i] );
+
+	PR1VM_FillAndSwapLumps (vm, p);
+}
+
+/*
+=================
 PR1VM_CommitServer
 
 PR1VM (S2): server — instance mirrors -> shared "module" globals (read by
@@ -1219,6 +1251,120 @@ void PR1VM_CommitServer (pr1vm_t *vm)
 	pr_global_struct = vm->global_struct;
 	pr_globals = vm->globals;
 	pr_edict_size = vm->edict_size;
+}
+
+char *PR1VM_GetString (pr1vm_t *vm, int num)
+{
+	if (!vm)
+		return NULL;
+
+	// dual: the server instance delegates to the global tables (read by PR2/sv_*)
+	if (vm == PR1VM_Server())
+		return PR1_GetString (num);
+
+	if (!vm->strings)
+		return NULL;
+
+	if (num < 0)
+	{
+		int idx = -num;
+		if (idx >= 2 * MAX_PRSTR)
+			return NULL;
+		if (idx >= MAX_PRSTR)
+			return vm->newstrtbl[idx - MAX_PRSTR];
+		return vm->strtbl[idx];
+	}
+	return vm->strings + num;
+}
+
+void PR1VM_SetString (pr1vm_t *vm, string_t *address, char *s)
+{
+	int i;
+
+	if (!address)
+		return;
+
+	// dual: server instance — global table (as before)
+	if (vm == PR1VM_Server())
+	{
+		PR1_SetString (address, s);
+		return;
+	}
+
+	if (!s || !s[0])
+	{
+		*address = 0;
+		return;
+	}
+
+	if (!vm->strings)
+		return;
+
+	// The module string area [strings, strings+numstrings) is constant
+	// (lifetime = module load) — store an offset as before.
+	if (s >= vm->strings && s < vm->strings + vm->progs->numstrings)
+	{
+		*address = (int)(s - vm->strings);
+		return;
+	}
+
+	// Temp string: deep-copy into the next per-instance ring slot
+	// (PR1VM_TEMP_STRINGS slots, see pr1vm.h). Each call gets its own buffer —
+	// a builtin result aliases neither its source nor previous results
+	// (analog of FTE PR_AllocTempString, initlib.c:1398; without GC the string
+	// lives until its slot is overwritten by following calls). Slot addresses
+	// are stable for the instance lifetime -> index into strtbl (entries
+	// <= PR1VM_TEMP_STRINGS, the silent MAX_PRSTR bail is unreachable).
+	{
+		char *dst = vm->tmpstr[vm->tmpstr_cur];
+		vm->tmpstr_cur = (vm->tmpstr_cur + 1) % PR1VM_TEMP_STRINGS;
+		strlcpy (dst, s, PR1VM_TEMP_STRING_SIZE);
+
+		for (i = 0; i < vm->numstr; i++)
+		{
+			if (vm->strtbl[i] == dst)
+			{
+				*address = -i;
+				return;
+			}
+		}
+		if (vm->numstr + 1 >= MAX_PRSTR)
+			return;	// client: no fatal
+		vm->strtbl[++vm->numstr] = dst;
+		*address = -vm->numstr;
+	}
+}
+
+dfunction_t *PR1VM_FindFunction (pr1vm_t *vm, const char *name)
+{
+	int i;
+
+	if (!vm || !vm->functions || !name)
+		return NULL;
+
+	for (i = 0; i < vm->progs->numfunctions; i++)
+	{
+		char *s = PR1VM_GetString (vm, vm->functions[i].s_name);
+		if (s && s[0] && !strcmp (s, name))
+			return &vm->functions[i];
+	}
+	return NULL;
+}
+
+int PR1VM_FindGlobal (pr1vm_t *vm, const char *name)
+{
+	int i;
+
+	if (!vm || !vm->globaldefs || !name)
+		return -1;
+
+	for (i = 0; i < vm->progs->numglobaldefs; i++)
+	{
+		char *s = PR1VM_GetString (vm, vm->globaldefs[i].s_name);
+		if (s && s[0] && !strcmp (s, name))
+			return vm->globaldefs[i].ofs;
+	}
+	return -1;
 }
 
 void PR1_LoadProgs (void)
@@ -1277,6 +1423,10 @@ void PR1_LoadProgs (void)
 	{
 		pr1vm_t *vm = PR1VM_Server();
 
+		// S6: every load (incl. repeats/after errors) starts from a clean
+		// instance — fixes stale mirrors after a failed load.
+		PR1VM_UnLoad (vm);
+
 		num_prstr = 0;
 
 		PR1VM_LoadData(vm, progs);
@@ -1289,6 +1439,14 @@ void PR1_LoadProgs (void)
 		for (i = 0; i < vm->progs->numfielddefs; i++)
 			if (vm->fielddefs[i].type & DEF_SAVEGLOBAL)
 				SV_Error ("PR1_LoadProgs: pr_fielddefs[i].type & DEF_SAVEGLOBAL");
+
+		// Field-offset map per module dialect: classic — raw (NULL),
+		// NQ — NQ remap (ADR 0017 P2, per-instance).
+#ifdef WITH_NQPROGS
+		vm->fieldofs_patch = pr_nqprogs ? fieldofs_nq : NULL;
+#else
+		vm->fieldofs_patch = NULL;
+#endif
 
 		PR1VM_CommitServer(vm);
 	}

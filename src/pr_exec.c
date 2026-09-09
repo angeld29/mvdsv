@@ -25,14 +25,25 @@ Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
 #include <limits.h>
 
 // PR1 execution state moved into pr1vm_t (pr1vm.h). Still shared here:
-// pr_trace (debug flag) and pr_argc (builtin call arg count) — until S5/W4.
+// pr_trace (debug flag) and pr_argc (builtin call arg count) — until S5.
 
 static pr1vm_t sv_pr1vm;	// server instance (default for PR_* wrappers)
 static pr1vm_t *g_active;	// instance PR1 is currently executing inside
 
+// ADR 0019 (Step 0): true while a NON-server instance (the client CSQC-VM) runs.
+// In this state the "classic" server helpers (PR1_GetString/PR1_SetString/...)
+// tied to the server module's global tables must not be called — the client
+// works with its own per-instance strings (PR1VM_Get/SetString).
+static qbool g_client_ctx;
+
 pr1vm_t *PR1VM_Active(void)
 {
 	return g_active;
+}
+
+qbool PR1VM_ClientContext(void)
+{
+	return g_client_ctx;
 }
 
 pr1vm_t *PR1VM_Server(void)
@@ -43,6 +54,68 @@ pr1vm_t *PR1VM_Server(void)
 void PR1VM_Reset(pr1vm_t *vm)
 {
 	memset(vm, 0, sizeof(*vm));
+}
+
+// S6: full reset of mirrors/exec state; host callbacks are kept.
+void PR1VM_UnLoad (pr1vm_t *vm)
+{
+	void (*host_error)(pr1vm_t *, const char *) = vm->host_error;
+	void (*host_print)(pr1vm_t *, const char *) = vm->host_print;
+	void *host_udata = vm->host_udata;
+
+	// Builtin tables are Q_malloc'd (server PR_InitBuiltins / client
+	// registration) — free them; the next load recreates them.
+	if (vm->builtins)
+	{
+		Q_free (vm->builtins);
+		vm->builtins = NULL;
+	}
+
+	memset (vm, 0, sizeof (*vm));
+	vm->host_error = host_error;
+	vm->host_print = host_print;
+	vm->host_udata = host_udata;
+}
+
+// P2.1: register a builtin by number (growing per-instance table).
+void PR1VM_RegisterBuiltin (pr1vm_t *vm, int num, builtin_t fn)
+{
+	if (num < 0 || !vm)
+		return;
+
+	if (num >= vm->numbuiltins)
+	{
+		builtin_t *nt = (builtin_t *) Q_malloc ((num + 1) * sizeof (builtin_t));
+		if (!nt)
+			return;
+		if (vm->builtins)
+		{
+			memcpy (nt, vm->builtins, vm->numbuiltins * sizeof (builtin_t));
+			Q_free (vm->builtins);
+		}
+		vm->builtins = nt;
+		vm->numbuiltins = num + 1;
+	}
+	vm->builtins[num] = fn;
+}
+
+// forward decls (defined below in this file)
+void PR_PrintStatement (dstatement_t *s);
+void PR_StackTrace (void);
+
+// Server host_error: prints the statement/stack and exits as before
+// (PR_RunError behavior up to S4). A client instance gets its own callback in S5.
+static void PR1VM_ServerHostError (pr1vm_t *vm, const char *msg)
+{
+	sv_error = true;
+	if (vm && vm->xfunction)
+	{
+		PR_PrintStatement (vm->statements + vm->xstatement);
+		PR_StackTrace ();
+		vm->depth = 0; // dump the stack so SV_Error can shutdown functions
+	}
+	Con_Printf ("%s\n", msg);
+	SV_Error ("Program error (PR_RunError)");
 }
 
 void PR1VM_BindServer(pr1vm_t *vm)
@@ -61,12 +134,21 @@ void PR1VM_BindServer(pr1vm_t *vm)
 	vm->edicts = (edict_t *)sv.edicts;
 	vm->num_edicts = sv.num_edicts;
 	vm->max_edicts = sv.max_edicts;
+	vm->state = sv.state;
 	vm->game_edicts = sv.game_edicts;
+	vm->host_error = PR1VM_ServerHostError;
 }
 
-qbool		pr_trace;
+// S4 debug: provoke PR_RunError on the server instance (host_error check).
+void PR1VM_TestError_f (void)
+{
+	pr1vm_t *vm = PR1VM_Server ();
+	PR1VM_BindServer (vm);
+	g_active = vm;
+	PR_RunError ("PR1VM test error (host_error path)");
+}
 
-int			pr_argc;
+// pr_argc/pr_trace moved into pr1vm_t (S5): vm->argc / vm->trace.
 
 char *pr_opnames[] =
     {
@@ -223,7 +305,7 @@ void PR_StackTrace (void)
 	}
 
 	vm->stack[vm->depth].f = vm->xfunction;
-	for (i=vm->depth ; i>=0 ; i--)
+	for (i=vm->depth ; i>0 ; i--)
 	{
 		f = vm->stack[i].f;
 
@@ -294,26 +376,45 @@ void PR_RunError (char *error, ...)
 	vsnprintf (string, sizeof(string), error, argptr);
 	va_end (argptr);
 
+	if (vm && vm->host_error)
+	{
+		vm->host_error (vm, string);
+		return;
+	}
 
+	// fallback (vm==NULL or host_error not set): previous behavior
 	sv_error = true;
-
 	if (vm)
 	{
 		if (vm->xfunction)
 		{
-			PR_PrintStatement (pr_statements + vm->xstatement);
+			PR_PrintStatement (vm->statements + vm->xstatement);
 			PR_StackTrace ();
 		}
 		vm->depth = 0; // dump the stack so SV_Error can shutdown functions
 	}
 	Con_Printf ("%s\n", string);
 
-	SV_Error ("Program error");
+	SV_Error ("Program error (PR_RunError)");
+}
+
+// PR1VM S5b: entity addressing through the instance mirrors (progs.h formulas on vm).
+static edict_t *PR1VM_ProgToEdict (pr1vm_t *vm, int e)
+{
+	return &vm->edicts[e / vm->edict_size];
+}
+
+// Module dialect field-offset map (ADR 0017 P2, per-instance):
+// NULL => raw/identity (classic QW, FTE CSQC); otherwise NQ remap. We do not
+// use the global PR_FIELDOFS — it is not initialized in this build (zeros).
+static int PR1VM_FieldOfs (pr1vm_t *vm, int i)
+{
+	return (i >= 0 && i <= 105 && vm->fieldofs_patch) ? vm->fieldofs_patch[i] : i;
 }
 
 /*
 ====================
-PR_EnterFunction
+PR1VM_EnterFunction
 
 Returns the new program statement counter
 ====================
@@ -334,7 +435,7 @@ int PR1VM_EnterFunction (pr1vm_t *vm, dfunction_t *f)
 		PR_RunError ("PR_ExecuteProgram: locals stack overflow\n");
 
 	for (i=0 ; i < c ; i++)
-		vm->localstack[vm->localstack_used+i] = ((int *)pr_globals)[f->parm_start + i];
+		vm->localstack[vm->localstack_used+i] = ((int *)vm->globals)[f->parm_start + i];
 	vm->localstack_used += c;
 
 	// copy parameters
@@ -343,7 +444,7 @@ int PR1VM_EnterFunction (pr1vm_t *vm, dfunction_t *f)
 	{
 		for (j=0 ; j<f->parm_size[i] ; j++)
 		{
-			((int *)pr_globals)[o] = ((int *)pr_globals)[OFS_PARM0+i*3+j];
+			((int *)vm->globals)[o] = ((int *)vm->globals)[OFS_PARM0+i*3+j];
 			o++;
 		}
 	}
@@ -354,7 +455,7 @@ int PR1VM_EnterFunction (pr1vm_t *vm, dfunction_t *f)
 
 /*
 ====================
-PR_LeaveFunction
+PR1VM_LeaveFunction
 ====================
 */
 int PR1VM_LeaveFunction (pr1vm_t *vm)
@@ -371,7 +472,7 @@ int PR1VM_LeaveFunction (pr1vm_t *vm)
 		PR_RunError ("PR_ExecuteProgram: locals stack underflow\n");
 
 	for (i=0 ; i < c ; i++)
-		((int *)pr_globals)[vm->xfunction->parm_start + i] = vm->localstack[vm->localstack_used+i];
+		((int *)vm->globals)[vm->xfunction->parm_start + i] = vm->localstack[vm->localstack_used+i];
 
 	// up stack
 	vm->depth--;
@@ -390,6 +491,8 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 {
 	eval_t *a = NULL, *b = NULL, *c = NULL;
 	pr1vm_t *saved_active;
+	float *saved_prglobals;	// ADR 0019: "classic" mirror context before attach
+	qbool saved_client_ctx;
 	int s;
 	dstatement_t *st = NULL;
 	dfunction_t *f, *newf;
@@ -402,17 +505,29 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 	saved_active = g_active;
 	g_active = vm;
 
-	if (!fnum || fnum >= progs->numfunctions)
+	if (!fnum || fnum >= vm->progs->numfunctions)
 	{
-		if (pr_global_struct->self)
-			ED_Print (PROG_TO_EDICT(pr_global_struct->self));
+		if (vm->global_struct && vm->global_struct->self && vm->edicts)
+			ED_Print (PR1VM_ProgToEdict(vm, vm->global_struct->self));
 		SV_Error ("PR_ExecuteProgram: NULL function");
 	}
 
-	f = &pr_functions[fnum];
+	// ADR 0019 (Step 0): attach the executing VM — for the duration of the loop
+	// the classic mirrors (pr_globals), which builtins read/write through the
+	// G_* macros, point at this VM's data. For the server instance this is
+	// identity (its mirrors are the default). Restored at the end of the
+	// function (incl. after a returning client host_error). Nesting
+	// (listen/PR_ExecuteProgram from client context) is safe: values are saved
+	// in this frame's locals and restored on exit.
+	saved_prglobals = pr_globals;
+	saved_client_ctx = g_client_ctx;
+	pr_globals = vm->globals;
+	g_client_ctx = (vm != PR1VM_Server());
+
+	f = &vm->functions[fnum];
 
 	runaway = 100000;
-	pr_trace = false;
+	vm->trace = false;
 
 	// make a stack frame
 	exitdepth = vm->depth;
@@ -423,10 +538,10 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 	{
 		s++; // next statement
 
-		st = &pr_statements[s];
-		a = (eval_t *)&pr_globals[st->a];
-		b = (eval_t *)&pr_globals[st->b];
-		c = (eval_t *)&pr_globals[st->c];
+		st = &vm->statements[s];
+		a = (eval_t *)&vm->globals[st->a];
+		b = (eval_t *)&vm->globals[st->b];
+		c = (eval_t *)&vm->globals[st->c];
 
 		if (--runaway == 0)
 			PR_RunError ("runaway loop error");
@@ -434,7 +549,7 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 		vm->xfunction->profile++;
 		vm->xstatement = s;
 
-		if (pr_trace)
+		if (vm->trace)
 			PR_PrintStatement (st);
 
 		switch (st->op)
@@ -515,13 +630,13 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 			c->_float = !a->vector[0] && !a->vector[1] && !a->vector[2];
 			break;
 		case OP_NOT_S:
-			c->_float = !a->string || !*PR1_GetString(a->string);
+			c->_float = !a->string || !*PR1VM_GetString(vm, a->string);
 			break;
 		case OP_NOT_FNC:
 			c->_float = !a->function;
 			break;
 		case OP_NOT_ENT:
-			c->_float = (PROG_TO_EDICT(a->edict) == sv.edicts);
+			c->_float = (PR1VM_ProgToEdict(vm, a->edict) == vm->edicts);
 			break;
 
 		case OP_EQ_F:
@@ -533,7 +648,7 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 			            (a->vector[2] == b->vector[2]);
 			break;
 		case OP_EQ_S:
-			c->_float = !strcmp(PR1_GetString(a->string), PR1_GetString(b->string));
+			c->_float = !strcmp(PR1VM_GetString(vm, a->string), PR1VM_GetString(vm, b->string));
 			break;
 		case OP_EQ_E:
 			c->_float = a->_int == b->_int;
@@ -552,7 +667,7 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 			            (a->vector[2] != b->vector[2]);
 			break;
 		case OP_NE_S:
-			c->_float = strcmp(PR1_GetString(a->string), PR1_GetString(b->string));
+			c->_float = strcmp(PR1VM_GetString(vm, a->string), PR1VM_GetString(vm, b->string));
 			break;
 		case OP_NE_E:
 			c->_float = a->_int != b->_int;
@@ -580,24 +695,24 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 		case OP_STOREP_FLD:		// integers
 		case OP_STOREP_S:
 		case OP_STOREP_FNC:		// pointers
-			ptr = (eval_t *)((byte *)sv.game_edicts + b->_int);
+			ptr = (eval_t *)((byte *)vm->game_edicts + b->_int);
 			ptr->_int = a->_int;
 			break;
 		case OP_STOREP_V:
-			ptr = (eval_t *)((byte *)sv.game_edicts + b->_int);
+			ptr = (eval_t *)((byte *)vm->game_edicts + b->_int);
 			ptr->vector[0] = a->vector[0];
 			ptr->vector[1] = a->vector[1];
 			ptr->vector[2] = a->vector[2];
 			break;
 
 		case OP_ADDRESS:
-			ed = PROG_TO_EDICT(a->edict);
+			ed = PR1VM_ProgToEdict(vm, a->edict);
 #ifdef PARANOID
 			NUM_FOR_EDICT(ed);		// make sure it's in range
 #endif
-			if (ed == (edict_t *)sv.edicts && sv.state == ss_active)
+			if (ed == vm->edicts && vm->state == ss_active)
 				PR_RunError ("assignment to world entity");
-			c->_int = (byte *)((int *)ed->v + PR_FIELDOFS(b->_int)) - (byte *)sv.game_edicts;
+			c->_int = (byte *)((int *)ed->v + PR1VM_FieldOfs(vm, b->_int)) - (byte *)vm->game_edicts;
 			break;
 
 		case OP_LOAD_F:
@@ -605,14 +720,16 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 		case OP_LOAD_ENT:
 		case OP_LOAD_S:
 		case OP_LOAD_FNC:
-			ed = PROG_TO_EDICT(a->edict);
+			ed = PR1VM_ProgToEdict(vm, a->edict);
 #ifdef PARANOID
 			NUM_FOR_EDICT(ed);		// make sure it's in range
 #endif
 			//need for checking 'cmd mmode player N', if N >= 0x10000000 =(signed)=> negative
+			// Field offset — through the instance dialect map (PR1VM_FieldOfs):
+			// FTE/classic raw, NQ — remap (ADR 0017 P2).
 			if (b->_int >= 0)
 			{
-				a = (eval_t *)((int *)ed->v + PR_FIELDOFS(b->_int));
+				a = (eval_t *)((int *)ed->v + PR1VM_FieldOfs(vm, b->_int));
 				c->_int = a->_int;
 			}
 			else
@@ -620,11 +737,11 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 			break;
 
 		case OP_LOAD_V:
-			ed = PROG_TO_EDICT(a->edict);
+			ed = PR1VM_ProgToEdict(vm, a->edict);
 #ifdef PARANOID
 			NUM_FOR_EDICT(ed);		// make sure it's in range
 #endif
-			a = (eval_t *)((int *)ed->v + PR_FIELDOFS(b->_int));
+			a = (eval_t *)((int *)ed->v + PR1VM_FieldOfs(vm, b->_int));
 			c->vector[0] = a->vector[0];
 			c->vector[1] = a->vector[1];
 			c->vector[2] = a->vector[2];
@@ -655,18 +772,18 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 		case OP_CALL6:
 		case OP_CALL7:
 		case OP_CALL8:
-			pr_argc = st->op - OP_CALL0;
+			vm->argc = st->op - OP_CALL0;
 			if (!a->function)
 				PR_RunError ("NULL function");
 
-			newf = &pr_functions[a->function];
+			newf = &vm->functions[a->function];
 
 			if (newf->first_statement < 0)
 			{	// negative statements are built in functions
 				i = -newf->first_statement;
-				if (i >= pr_numbuiltins)
-					PR_RunError ("Bad builtin call number");
-				pr_builtins[i] ();
+				if (i >= vm->numbuiltins || !vm->builtins[i])
+					PR_RunError ("Bad builtin call number %d", i);
+				vm->builtins[i] ();
 				break;
 			}
 
@@ -676,21 +793,25 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 
 		case OP_DONE:
 		case OP_RETURN:
-			pr_globals[OFS_RETURN] = pr_globals[st->a];
-			pr_globals[OFS_RETURN+1] = pr_globals[st->a+1];
-			pr_globals[OFS_RETURN+2] = pr_globals[st->a+2];
+			vm->globals[OFS_RETURN] = vm->globals[st->a];
+			vm->globals[OFS_RETURN+1] = vm->globals[st->a+1];
+			vm->globals[OFS_RETURN+2] = vm->globals[st->a+2];
 
 			s = PR1VM_LeaveFunction (vm);
 			if (vm->depth == exitdepth)
 			{
+				// ADR 0019 (Step 0): detach — restore the classic mirrors and
+				// the client-context flag, then the active instance.
+				pr_globals = saved_prglobals;
+				g_client_ctx = saved_client_ctx;
 				g_active = saved_active;
 				return;		// all done
 			}
 			break;
 
 		case OP_STATE:
-			ed = PROG_TO_EDICT(pr_global_struct->self);
-			ed->v->nextthink = pr_global_struct->time + 0.1;
+			ed = PR1VM_ProgToEdict(vm, vm->global_struct->self);
+			ed->v->nextthink = vm->global_struct->time + 0.1;
 			if (a->_float != ed->v->frame)
 			{
 				ed->v->frame = a->_float;
@@ -709,7 +830,7 @@ void PR1VM_ExecuteProgram (pr1vm_t *vm, func_t fnum)
 ============
 PR_ExecuteProgram
 
-Server-facing wrapper: runs on the server PR1 instance (mirrors from shared
+Server-facing wrapper: runs on the server PR1 instance (mirrors from the shared
 globals are refreshed before each call).
 ============
 */
@@ -727,6 +848,14 @@ int num_prstr;
 
 char *PR1_GetString(int num)
 {
+	// ADR 0019 (Step 0): the global string tables belong to the server module —
+	// do not use them in a client context (the client reads strings through
+	// PR1VM_GetString). This guard catches an accidental call from the client.
+	if (g_client_ctx)
+	{
+		Con_Printf ("PR1_GetString: global string path in client context (ADR 0019) — ignored\n");
+		return NULL;
+	}
 	if (num < 0)
 	{
 		//Con_DPrintf("GET:%d == %s\n", num, pr_strtbl[-num]);
@@ -748,6 +877,13 @@ void PR1_SetString(string_t* address, char* s)
 {
 	int i;
 
+	// ADR 0019 (Step 0): as in PR1_GetString — do not touch the server module's
+	// global string tables in a client context.
+	if (g_client_ctx)
+	{
+		Con_Printf ("PR1_SetString: global string path in client context (ADR 0019) — ignored\n");
+		return;
+	}
 	if (!address) {
 		return;
 	}
@@ -916,12 +1052,13 @@ void PR1_UnLoadProgs(void)
 {
 	if (progs)
 	{
-		// FIXME: There should be done alot of variables reseting...
-
 #ifdef WITH_NQPROGS
 		pr_nqprogs = false;
 #endif
 		progs = NULL;
+
+		// PR1VM S6: the instance no longer references the module being freed.
+		PR1VM_UnLoad (PR1VM_Server ());
 	}
 }
 
