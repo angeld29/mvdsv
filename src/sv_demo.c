@@ -914,6 +914,28 @@ static void SV_AddLastDemo(void)
 
 /*
 ====================
+SV_MVD_FreeRecorderCSQC
+
+Frees the recorder's CSQC delta state (pendingcsqcbits) without touching
+demo.dest - used by SV_MVDStop when the recorder really goes away and by
+SV_MVD_Record before it partial-memsets the demo struct on a fresh start.
+====================
+*/
+static void SV_MVD_FreeRecorderCSQC (void)
+{
+#ifdef FTE_PEXT_CSQC
+	if (demo.recorder.pendingcsqcbits)
+	{
+		Q_free(demo.recorder.pendingcsqcbits);
+		demo.recorder.pendingcsqcbits = NULL;
+	}
+	demo.recorder.max_net_ents = 0;
+	demo.recorder.csqcactive = false;
+#endif
+}
+
+/*
+====================
 SV_MVDStop
 
 stop recording a demo
@@ -1003,17 +1025,17 @@ void SV_MVDStop (int reason, qbool mvdonly)
 	instop = false; // SET TO FALSE
 
 out:
-#ifdef FTE_PEXT_CSQC
-	// the recorder struct is memset on the next fresh record start, so free
-	// the CSQC delta bitset here to avoid leaking it
-	if (demo.recorder.pendingcsqcbits)
-	{
-		Q_free(demo.recorder.pendingcsqcbits);
-		demo.recorder.pendingcsqcbits = NULL;
-	}
-	demo.recorder.max_net_ents = 0;
-	demo.recorder.csqcactive = false;
-#endif
+	// Free the recorder's CSQC delta state only when the recorder is really
+	// gone. A mvdonly stop (reason 0/2 via SV_MVDStop_f / SV_MVD_Cancel_f, and
+	// KTX's localcmd("stop")) keeps DEST_STREAM (QTV) destinations alive, so
+	// sv.mvdrecording stays true and the stream still needs csqcactive +
+	// pendingcsqcbits to keep emitting CSQC entities. Clearing them here left
+	// a live QTV stream without CSQC (entities fell back to packetentities and
+	// viewers kept stale state) with no way to re-arm, since
+	// SV_MVD_SendInitialGamestate is only called from SV_MVD_Record (PR228
+	// rev [7]). On the next fresh record start the struct is memset anyway.
+	if (!sv.mvdrecording)
+		SV_MVD_FreeRecorderCSQC();
 	if (reason != 3)
 		SV_BroadcastPrintCache();
 }
@@ -1159,6 +1181,14 @@ qbool SV_MVD_Record (mvddest_t *dest, qbool mapchange)
 	{
 		// this is either mapchange and we have QTV connected
 		// or we just use /record or whatever command first time and here no recording yet
+
+		// The recorder (demo.recorder, holding the CSQC delta bitset) lives
+		// before mem_set_point, so the partial memset below would overwrite
+		// demo.recorder.pendingcsqcbits without freeing it. The ordinary map
+		// path frees it earlier via SV_MVDStop_f, but the savegame `load` path
+		// calls SV_SpawnServer directly (sv_save.c) without it, so free here to
+		// avoid a leak per load (PR228 rev [7], sv_save.c note).
+		SV_MVD_FreeRecorderCSQC();
 
     	// and here we memset() not whole demo_t struct, but part,
     	// so demo.dest and demo.pendingdest is not overwriten
