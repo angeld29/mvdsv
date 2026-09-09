@@ -4752,6 +4752,9 @@ static void SV_ReadQCRequest(qbool dispatch)
 			MSG_ReadLong();
 			break;
 		}
+
+		if (msg_badread)
+			return;	// stream ended mid-argument (PR228 rev [12])
 	}
 
 done:
