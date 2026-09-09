@@ -447,23 +447,13 @@ void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
 
 #ifdef FTE_PEXT_CSQC
 	// svc_fte_cgamepacket (ssqc->csqc) only makes sense for CSQC clients.
-	// Convert to the sized variant under sv_csqcdebug (mirror of FTE net_preparse).
-	if (sv.multicast.cursize > 0 && sv.multicast.data[0] == svc_fte_cgamepacket)
-	{
-		int payload_len = sv.multicast.cursize - 1;
-
-		if ((int)sv_csqcdebug.value && sv.multicast.cursize + 2 <= sv.multicast.maxsize)
-		{
-			// buffer: [83][payload] -> [90][lenlo][lenhi][payload]
-			memmove(sv.multicast.data + 3, sv.multicast.data + 1, payload_len);
-			sv.multicast.data[0] = svc_fte_cgamepacket_sized;
-			sv.multicast.data[1] = payload_len & 0xff;
-			sv.multicast.data[2] = (payload_len >> 8) & 0xff;
-			sv.multicast.cursize += 2;
-		}
-
-		csqc_only = true;
-	}
+	// We do NOT rewrite sv.multicast in place here: the MVD/hidden paths below
+	// must get the original buffer unchanged (recorded demos keep plain svc 76/
+	// 83 so they play back elsewhere, and a hidden block whose first byte is 83
+	// must not be mangled). The sized (90) conversion is applied only when
+	// copying to a live CSQC client under sv_csqcdebug, mirroring FTE's
+	// per-destination net_preparse (PR228 rev [15]).
+	csqc_only = sv.multicast.cursize > 0 && sv.multicast.data[0] == svc_fte_cgamepacket;
 #endif
 
 	// send the data to all relevent clients
@@ -522,13 +512,34 @@ void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
 		}
 
 inrange:
-		if (reliable || (cl_reliable_key && *cl_reliable_key && strcmp("0", Info_Get(&client->_userinfo_ctx_, cl_reliable_key))))
 		{
-			ClientReliableCheckBlock(client, sv.multicast.cursize);
-			ClientReliableWrite_SZ(client, sv.multicast.data, sv.multicast.cursize);
+			// per-destination view of the payload: normally sv.multicast as-is;
+			// a cgamepacket to a live CSQC client becomes sized under
+			// sv_csqcdebug (MVD/hidden keep the plain form below).
+			byte *data = sv.multicast.data;
+			int   len = sv.multicast.cursize;
+#ifdef FTE_PEXT_CSQC
+			byte  sized[MAX_MSGLEN + 2];
+			if (csqc_only && (int)sv_csqcdebug.value && (client->fteprotocolextensions & FTE_PEXT_CSQC)
+				&& sv.multicast.cursize + 2 <= (int)sizeof(sized))
+			{
+				// [83][payload] -> [90][lenlo][lenhi][payload]
+				sized[0] = svc_fte_cgamepacket_sized;
+				sized[1] = sv.multicast.cursize - 1;
+				sized[2] = (sv.multicast.cursize - 1) >> 8;
+				memcpy(sized + 3, sv.multicast.data + 1, sv.multicast.cursize - 1);
+				data = sized;
+				len = sv.multicast.cursize + 2;
+			}
+#endif
+			if (reliable || (cl_reliable_key && *cl_reliable_key && strcmp("0", Info_Get(&client->_userinfo_ctx_, cl_reliable_key))))
+			{
+				ClientReliableCheckBlock(client, len);
+				ClientReliableWrite_SZ(client, data, len);
+			}
+			else
+				SZ_Write (&client->datagram, data, len);
 		}
-		else
-			SZ_Write (&client->datagram, sv.multicast.data, sv.multicast.cursize);
 	}
 
 	if (sv.mvdrecording) {
