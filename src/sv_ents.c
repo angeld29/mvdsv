@@ -575,6 +575,94 @@ static void SV_EmitDeltaEntIndex (sizebuf_t *msg, unsigned int entnum, qbool rem
 	MSG_WriteShort (msg, entnum | rflag);
 }
 
+#ifdef FTE_PEXT_CSQC
+// Record one entity update emitted into the current frame's datagram so a
+// lost packet can re-flag it (FTE SV_EmitCSQCUpdate resend[]). Only the
+// entity number is kept; on drop it is re-flagged SENDFLAGS_USABLE (full
+// resend - simple and always correct). Overflow falls back to a full resend
+// of all PRESENT entities on drop (csqc_log_overflow).
+static void SV_CSQC_LogAdd (client_t *client, client_frame_t *frame, int entnum)
+{
+	if (client < svs.clients || client >= svs.clients + MAX_CLIENTS)
+		return;	// MVD recorder has its own frame store; no loss recovery there
+	if (frame->csqc_log_overflow)
+		return;
+	if (frame->csqc_lognum >= CSQC_LOG_MAX)
+	{
+		// too many updates in one frame to track individually: on drop, fall
+		// back to a full resend of every PRESENT entity (SV_CSQC_DroppedPacket).
+		frame->csqc_log_overflow = true;
+		return;
+	}
+	frame->csqc_log[frame->csqc_lognum] = entnum;
+	frame->csqc_lognum++;
+}
+
+/*
+=============
+SV_CSQC_DroppedPacket
+
+A frame that went out under `sequence` was lost (client acked past it).
+Re-flag the entities whose updates were in it so they are sent again.
+Mirrors FTE sv_ents.c:557.
+=============
+*/
+void SV_CSQC_DroppedPacket (client_t *client, int sequence)
+{
+	int i;
+	client_frame_t *frame;
+
+	if (!client->csqcactive || !client->pendingcsqcbits)
+		return;
+
+	frame = &client->frames[sequence & UPDATE_MASK];
+
+	// skip if we never generated that frame, to avoid pulling in stale data
+	if (frame->sequence != sequence)
+		return;
+
+	if (frame->csqc_log_overflow)
+	{
+		// too many tracked updates in that frame: resend everything PRESENT
+		for (i = 1; i < client->max_net_ents; i++)
+			if (client->pendingcsqcbits[i] & SENDFLAGS_PRESENT)
+				client->pendingcsqcbits[i] |= SENDFLAGS_USABLE;
+	}
+	else if (frame->csqc_lognum)
+	{
+		for (i = 0; i < frame->csqc_lognum; i++)
+			if (frame->csqc_log[i] < (unsigned short)client->max_net_ents)
+				client->pendingcsqcbits[frame->csqc_log[i]] |= SENDFLAGS_USABLE;
+		frame->csqc_lognum = 0;	// don't resend the same info twice
+	}
+}
+
+/*
+=============
+SV_AckEntityFrame
+
+The client acknowledged up to `framenum`; any frames between the previously
+acknowledged one and this one were lost. Mirrors FTE sv_ents.c:618.
+=============
+*/
+void SV_AckEntityFrame (client_t *client, int framenum)
+{
+	int frame;
+
+	if (!client->csqcactive)
+		return;
+
+	frame = client->csqc_lastack + 1;
+	if (framenum > client->csqc_lastack)
+		client->csqc_lastack = framenum;
+	if (framenum > frame + UPDATE_BACKUP)
+		framenum = frame + UPDATE_BACKUP;
+
+	for (; frame < framenum; frame++)
+		SV_CSQC_DroppedPacket (client, frame);
+}
+#endif
+
 /*
 =============
 SV_EmitCSQCUpdate
@@ -591,11 +679,27 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 	edict_t *ent;
 	qbool writtenheader = false;
 	uint64_t bits;
+	client_frame_t *logframe;
 
 	//we don't check that we got some already - because this is delta compressed!
 
 	if (!client->csqcactive || !client->pendingcsqcbits)
 		return;
+
+	// the datagram we are building goes out under this client's sequence (see
+	// SV_WriteEntitiesToClient frame = frames[incoming_sequence & UPDATE_MASK]
+	// and the clc_delta handler); log every entity update we actually emit into
+	// that frame so a later NACK can re-flag the lost ones (FTE resend[]).
+	{
+		int seq = client->netchan.incoming_sequence;
+		logframe = &client->frames[seq & UPDATE_MASK];
+		if (logframe->sequence != seq)
+		{	// slot reused by a newer frame (older one is long lost/acked)
+			logframe->sequence = seq;
+			logframe->csqc_lognum = 0;
+			logframe->csqc_log_overflow = false;
+		}
+	}
 
 	if (client->edict)
 		viewerent = EDICT_TO_PROG(client->edict);
@@ -632,6 +736,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			}
 
 			SV_EmitDeltaEntIndex (msg, e, true);
+			SV_CSQC_LogAdd (client, logframe, e);
 			client->pendingcsqcbits[e] = 0;
 			continue;
 		}
@@ -709,6 +814,10 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			}
 			SZ_Write (msg, csqcmsgbuffer.data, csqcmsgbuffer.cursize);
 
+			// the entity update went into this frame's datagram: remember what
+			// was sent so a lost packet re-flags exactly these bits.
+			SV_CSQC_LogAdd (client, logframe, e);
+
 			client->pendingcsqcbits[e] |= SENDFLAGS_PRESENT;
 		}
 		else if ((bits & SENDFLAGS_PRESENT) && !((int)ent->xv.pvsflags & PVSF_NOREMOVE))
@@ -726,6 +835,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			}
 
 			SV_EmitDeltaEntIndex (msg, e, true);
+			SV_CSQC_LogAdd (client, logframe, e);
 		}
 	}
 
