@@ -77,6 +77,12 @@ pr1vm_t *PR1VM_Server(void);
 void PR1VM_Reset(pr1vm_t *vm);
 void PR1VM_BindServer(pr1vm_t *vm);
 
+// Load: byte-swap header+lumps and fill the instance mirrors (without
+// version/CRC validation — done by the server wrapper).
+void PR1VM_LoadData(pr1vm_t *vm, dprograms_t *hdr);
+// Server: instance mirrors -> shared "module" globals (read by PR2/sv_*.c).
+void PR1VM_CommitServer(pr1vm_t *vm);
+
 int  PR1VM_EnterFunction(pr1vm_t *vm, dfunction_t *f);
 int  PR1VM_LeaveFunction(pr1vm_t *vm);
 void PR1VM_ExecuteProgram(pr1vm_t *vm, func_t fnum);
