@@ -1003,8 +1003,14 @@ void SV_UpdateQCStats(edict_t *ent, int *stats)
 			stats[q->statnum + 2] = (int)eval->vector[2];
 			break;
 		case CSQC_EV_ENTITY:
-			stats[q->statnum] = NUM_FOR_EDICT(PROG_TO_EDICT(eval->edict));
-			break;
+			{
+				// the field value is mod data and may be out of range or hold a
+				// non-entity float; never let it index sv.edicts (FTE returns
+				// world for out-of-range values instead of crashing).
+				unsigned int idx = (unsigned int)eval->edict / pr_edict_size;
+				stats[q->statnum] = (idx < (unsigned int)sv.num_edicts) ? (int)idx : 0;
+				break;
+			}
 		case CSQC_EV_INTEGER:
 			stats[q->statnum] = eval->_int;
 			break;
