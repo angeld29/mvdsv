@@ -4611,9 +4611,15 @@ int SV_QCRequestArg(int idx, void *dst, size_t dstsize)
 /*
 ===================
 SV_ReadQCRequest
+
+Parses (and optionally dispatches) a clcfte_qcrequest. When `dispatch` is
+false the wire payload is still fully consumed (typed args + event name) but
+no mod export / PR1 CSEv_* is invoked - used to safely swallow a sendevent
+on a server whose loaded mod is PR1 (no CSQC) so the bytes are not re-parsed
+as clc opcodes (PR228 rev [6]).
 ===================
 */
-static void SV_ReadQCRequest(void)
+static void SV_ReadQCRequest(qbool dispatch)
 {
 	char args[8];
 	char *rname;
@@ -4756,6 +4762,9 @@ done:
 		return;
 
 	strlcpy(qcrequest_eventname, rname, sizeof(qcrequest_eventname));
+
+	if (!dispatch)
+		return;	// consumed the payload only (e.g. PR1 mod: CSQC off)
 
 	if (sv_vm)
 	{	// PR2: fixed export. self=client, arg0=argcount; the mod pulls the
@@ -5144,19 +5153,24 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 #ifdef FTE_PEXT_CSQC
 		case clcfte_qcrequest:
-			if (!SV_CSQCActive())
-			{
-				// PR1 mod: CSQC is disabled, ignore the sendevent instead of dropping
-				Con_DPrintf("client %s sent qcrequest but the loaded mod is PR1 (no CSQC)\n", cl->name);
-				break;
-			}
+			// A client that never negotiated FTE_PEXT_CSQC must not reach this
+			// path at all - 81 (clcfte_qcrequest) only makes sense with CSQC.
 			if (!(cl->fteprotocolextensions & FTE_PEXT_CSQC))
 			{
 				Con_Printf("client %s sent qcrequest without CSQC extension\n", cl->name);
 				SV_DropClient(cl);
 				return;
 			}
-			SV_ReadQCRequest();
+			if (!SV_CSQCActive())
+			{
+				// PR1 mod: CSQC is disabled, but the payload must still be
+				// consumed or its bytes would re-parse as clc opcodes below
+				// (PR228 rev [6]). Swallow without dispatching.
+				Con_DPrintf("client %s sent qcrequest but the loaded mod is PR1 (no CSQC)\n", cl->name);
+				SV_ReadQCRequest(false);
+				break;
+			}
+			SV_ReadQCRequest(true);
 			break;
 #endif
 		}

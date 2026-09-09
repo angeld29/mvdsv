@@ -514,6 +514,30 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 		svs.clients[i].edict = ent;
 		//ZOID - make sure we update frags right
 		svs.clients[i].old_frags = 0;
+
+#ifdef FTE_PEXT_CSQC
+		// PR228 rev [6]/[8]: a new map (and possibly a new mod type) is being
+		// spawned. The client's CSQC run state is per-level: csprogs is shut
+		// down by the client on map change and re-armed via enablecsqc only
+		// after it sees a fresh *csprogs. Reset csqcactive/bitset here so a
+		// switch to a PR1 mod does not keep emitting svc 76 into the first
+		// frame of the new level (client then dies with "csprogsvers/0.dat
+		// required"). On a PR2 map the client re-arms CSQC itself.
+		//
+		// fteprotocolextensions is only dropped for non-CSQC (PR1) mods: ext is
+		// negotiated once at connect ("do not reset") and is NOT re-sent on a
+		// PR2 map change, so clearing it unconditionally would permanently
+		// disable CSQC for an already-connected PR2 client.
+		svs.clients[i].csqcactive = false;
+		if (!SV_CSQCActive())
+			svs.clients[i].fteprotocolextensions &= ~FTE_PEXT_CSQC;
+		if (svs.clients[i].pendingcsqcbits)
+		{
+			Q_free(svs.clients[i].pendingcsqcbits);
+			svs.clients[i].pendingcsqcbits = NULL;
+		}
+		svs.clients[i].max_net_ents = 0;
+#endif
 	}
 
 	// fill sv.mapname and sv.modelname with new map name
