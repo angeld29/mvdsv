@@ -510,7 +510,7 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 		svs.clients[i].old_frags = 0;
 
 #ifdef FTE_PEXT_CSQC
-		// PR228 rev [6]/[8]: a new map (and possibly a new mod type) is being
+		// A new map (and possibly a new mod type) is being
 		// spawned. The client's CSQC run state is per-level: csprogs is shut
 		// down by the client on map change and re-armed via enablecsqc only
 		// after it sees a fresh *csprogs. Reset csqcactive/bitset here so a

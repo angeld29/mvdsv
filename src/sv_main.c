@@ -451,7 +451,7 @@ void SV_DropClient(client_t* drop)
 	{
 		int si;
 		for (si = 0; si < MAX_CL_STATS; si++)
-			Q_free(drop->statss[si]);	// free cached string stats (PR228 [18])
+			Q_free(drop->statss[si]);	// free cached string stats
 	}
 #endif
 

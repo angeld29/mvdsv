@@ -137,11 +137,11 @@ typedef struct
 
 #define MSG_CSQC		5		// for csqc (pr2_cmds.c WriteDest2)
 
-// CSQC stat wire opcodes for fractional/string stats (PR228 rev [18]).
+// CSQC stat wire opcodes for fractional/string stats.
 // FTE defines svcfte_updatestatstring/updatestatfloat as 78/79; upstream
-// qwprot/ezQuake do not, so mvdsv currently truncates such stats to int in
-// SV_UpdateQCStats. Define them locally (guarded) so the float/string emit
-// path can light up once qwprot carries them, without colliding meanwhile.
+// qwprot/ezQuake do not carry them yet, so define them locally (guarded).
+// mvdsv emits them (live clients and, under sv_mvd_csqc, MVD/QTV); only the
+// client-side receive path is pending on qwprot/ezQuake.
 #ifndef svcfte_updatestatstring
 #define svcfte_updatestatstring	78	// [byte statnum] [string]
 #endif
@@ -181,7 +181,7 @@ void SV_QCStatFieldIdx (int type, unsigned int fieldindex, int statnum);
 void SV_QCStatPtr (int type, void *ptr, int statnum);
 void SV_QCStatGlobal (int type, const char *name, int statnum);
 void SV_UpdateQCStats (edict_t *ent, int *statsi, float *statsf, const char **statss);
-// CSQC stat wire kinds (PR228 [18]): drives the emit opcode for a statnum
+// CSQC stat wire kinds: drives the emit opcode for a statnum
 #define QCSTAT_KIND_INT		0
 #define QCSTAT_KIND_FLOAT	1
 #define QCSTAT_KIND_STRING	2
@@ -330,7 +330,7 @@ typedef struct client_s
 	int				stats[MAX_CL_STATS];
 
 #ifdef FTE_PEXT_CSQC
-	float			statsf[MAX_CL_STATS];	// last emitted float stat value (PR228 [18])
+	float			statsf[MAX_CL_STATS];	// last emitted float stat value
 	char			*statss[MAX_CL_STATS];	// last emitted string stat (host copy, Q_strdup)
 #endif
 

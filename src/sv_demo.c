@@ -53,7 +53,7 @@ cvar_t	sv_demoRegexp		= {"sv_demoRegexp",		"\\.mvd(\\.(gz|bz2|rar|zip))?$"};
 
 cvar_t	sv_silentrecord		= {"sv_silentrecord",   "0"};
 // opt-in: record the CSQC stream (svc 76/83, stats 32..127) into MVD/QTV. Off
-// by default because stock ezQuake/QTV cannot parse it (PR228 rev [1]/[1b]).
+// by default because stock ezQuake/QTV cannot parse it.
 cvar_t	sv_mvd_csqc			= {"sv_mvd_csqc",		"0"};
 
 cvar_t	extralogname		= {"extralogname",		"unset"}; // no sv_ prefix? WTF!
@@ -935,7 +935,7 @@ static void SV_MVD_FreeRecorderCSQC (void)
 	}
 	demo.recorder.max_net_ents = 0;
 	demo.recorder.csqcactive = false;
-	// free the recorder's cached string stats (host copies, PR228 [18])
+	// free the recorder's cached string stats (host copies)
 	for (i = 0; i < MAX_CLIENTS; i++)
 		for (j = 0; j < MAX_CL_STATS; j++)
 			Q_free(demo.statss[i][j]);
@@ -1040,8 +1040,8 @@ out:
 	// pendingcsqcbits to keep emitting CSQC entities. Clearing them here left
 	// a live QTV stream without CSQC (entities fell back to packetentities and
 	// viewers kept stale state) with no way to re-arm, since
-	// SV_MVD_SendInitialGamestate is only called from SV_MVD_Record (PR228
-	// rev [7]). On the next fresh record start the struct is memset anyway.
+	// SV_MVD_SendInitialGamestate is only called from SV_MVD_Record. On the
+	// next fresh record start the struct is memset anyway.
 	if (!sv.mvdrecording)
 		SV_MVD_FreeRecorderCSQC();
 	if (reason != 3)
@@ -1195,7 +1195,7 @@ qbool SV_MVD_Record (mvddest_t *dest, qbool mapchange)
 		// demo.recorder.pendingcsqcbits without freeing it. The ordinary map
 		// path frees it earlier via SV_MVDStop_f, but the savegame `load` path
 		// calls SV_SpawnServer directly (sv_save.c) without it, so free here to
-		// avoid a leak per load (PR228 rev [7], sv_save.c note).
+		// avoid a leak per load (see sv_save.c).
 		SV_MVD_FreeRecorderCSQC();
 
     	// and here we memset() not whole demo_t struct, but part,
@@ -1306,7 +1306,7 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 #endif
 #ifdef FTE_PEXT_CSQC
 	// Only arm the recorder for CSQC when explicitly opted in: by default the
-	// MVD/QTV stream must stay parseable by stock ezQuake/QTV (PR228 rev [1b]).
+	// MVD/QTV stream must stay parseable by stock ezQuake/QTV.
 	if (SV_CSQCActive() && (int)sv_mvd_csqc.value)
 	{
 		demo.recorder.fteprotocolextensions |= FTE_PEXT_CSQC;
@@ -1730,7 +1730,7 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 			SV_UpdateQCStats (ent, statsi, statsf, statss);
 #endif
 
-		// legacy 32 stats unless the recorder is explicitly CSQC (PR228 rev [1])
+		// legacy 32 stats unless the recorder is explicitly CSQC
 #ifdef FTE_PEXT_CSQC
 		n = SV_WantsQCStats (&demo.recorder) ? MAX_CL_STATS : MAX_WIRE_STATS;
 #else
@@ -1740,7 +1740,7 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 		for (j = 0; j < n; j++)
 		{
 #ifdef FTE_PEXT_CSQC
-			// PR228 rev [18]: float/string stats use their own wire opcodes
+			// float/string stats use their own wire opcodes
 			if (SV_QCStatKind(j) == QCSTAT_KIND_FLOAT)
 			{
 				if (statsf[j] && statsf[j] != (float)(int)statsf[j])

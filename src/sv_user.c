@@ -3127,7 +3127,7 @@ void SV_EnableClientsCSQC(void)
 		return; // PR1 mod: no CSQC support, ignore the client request
 
 	// a client that never negotiated FTE_PEXT_CSQC must not be enabled - svc 76
-	// would be sent to a client that Host_Errors on it (PR228 rev [17]).
+	// would be sent to a client that Host_Errors on it.
 	if (!(sv_client->fteprotocolextensions & FTE_PEXT_CSQC))
 		return;
 
@@ -3135,7 +3135,7 @@ void SV_EnableClientsCSQC(void)
 
 	// arm the CSQC delta bitset now: SV_WriteEntitiesToClient would allocate it
 	// lazily a frame later, and sendflags set this frame would be dropped in the
-	// meantime (PR228 rev [9]).
+	// meantime.
 	if (!sv_client->pendingcsqcbits && sv.max_edicts > 0)
 	{
 		sv_client->pendingcsqcbits = Q_calloc(sv.max_edicts, sizeof(uint64_t));
@@ -4631,8 +4631,8 @@ Parses (and optionally dispatches) a clcfte_qcrequest. When `dispatch` is
 false the wire payload is still fully consumed (typed args + event name) but
 no mod export is invoked - used to safely swallow a sendevent on a server
 whose loaded mod is PR1 (no CSQC) so the bytes are not re-parsed as clc
-opcodes (PR228 rev [6]). Dispatch (true) always means a PR2 VM, so only
-GAME_QCREQUEST is reached (PR228 rev [20]).
+opcodes. Dispatch (true) always means a PR2 VM, so only
+GAME_QCREQUEST is reached.
 ===================
 */
 static void SV_ReadQCRequest(qbool dispatch)
@@ -4707,7 +4707,7 @@ static void SV_ReadQCRequest(qbool dispatch)
 		case QCREQ_EV_DOUBLE:
 			args[i] = '?';	// 64-bit/double: no PR2 slot, consume and skip
 			qcrequest_args[i].type = QCREQ_T_UNKNOWN;
-			MSG_ReadSkip(8);	// 8 bytes; stops itself on badread (PR228 rev [19])
+			MSG_ReadSkip(8);	// 8 bytes; stops itself on badread
 			break;
 		case ev_pointer:
 			args[i] = 'p';
@@ -4723,7 +4723,7 @@ static void SV_ReadQCRequest(qbool dispatch)
 					msg_badread = true;
 					return;
 				}
-				MSG_ReadSkip(len);	// stops itself on badread (PR228 rev [19])
+				MSG_ReadSkip(len);	// stops itself on badread
 			}
 			else
 			{
@@ -4762,7 +4762,7 @@ static void SV_ReadQCRequest(qbool dispatch)
 		}
 
 		if (msg_badread)
-			return;	// stream ended mid-argument (PR228 rev [12])
+			return;	// stream ended mid-argument
 	}
 
 done:
@@ -4781,7 +4781,7 @@ done:
 	// name via trap_Argv(0) and arg values via the qcrequestarg trap. The PR1
 	// CSEv_* branch was unreachable here - dispatch is only true when
 	// SV_CSQCActive() (sv_vm != NULL), PR1 calls come with dispatch=false and
-	// return above (PR228 rev [20]).
+	// return above.
 	PR2_QCRequest(sv_client->edict, qcrequest_argc);
 }
 #endif
@@ -5137,7 +5137,7 @@ void SV_ExecuteClientMessage (client_t *cl)
 			{
 				// PR1 mod: CSQC is disabled, but the payload must still be
 				// consumed or its bytes would re-parse as clc opcodes below
-				// (PR228 rev [6]). Swallow without dispatching.
+				// Swallow without dispatching.
 				Con_DPrintf("client %s sent qcrequest but the loaded mod is PR1 (no CSQC)\n", cl->name);
 				SV_ReadQCRequest(false);
 				break;

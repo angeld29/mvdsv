@@ -1400,7 +1400,7 @@ void PF2_WriteString(int to, char *data)
 		sizebuf_t *dest = WriteDest2(to);
 		int len = (data && *data) ? (int)strlen(data) + 1 : 1;
 
-		// PR228-rev [14]: SZ_GetSpace Sys_Errors when a *single* write exceeds
+		// SZ_GetSpace Sys_Errors when a *single* write exceeds
 		// maxsize even with allowoverflow (csqcmsgbuffer is only MAX_DATAGRAM).
 		// Such a payload can never fit the client datagram anyway, so for
 		// allowoverflow destinations mark it overflowed and drop it instead of

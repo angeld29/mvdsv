@@ -452,7 +452,7 @@ void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
 	// 83 so they play back elsewhere, and a hidden block whose first byte is 83
 	// must not be mangled). The sized (90) conversion is applied only when
 	// copying to a live CSQC client under sv_csqcdebug, mirroring FTE's
-	// per-destination net_preparse (PR228 rev [15]).
+	// per-destination net_preparse.
 	csqc_only = sv.multicast.cursize > 0 && sv.multicast.data[0] == svc_fte_cgamepacket;
 #endif
 
@@ -557,7 +557,7 @@ inrange:
 #ifdef FTE_PEXT_CSQC
 		else if (csqc_only && !SV_WantsQCStats(&demo.recorder)) {
 			// CSQC-only message to a stock-compatible recorder: keep it out of
-			// the MVD/QTV stream (PR228 rev [1b])
+			// the MVD/QTV stream
 		}
 #endif
 		else if (reliable) {
@@ -993,7 +993,7 @@ void SV_QCStatFieldIdx(int type, unsigned int fieldindex, int statnum)
 	// GAME_INIT, which runs before PR2_InitProg assigns pr_edict_size (so it is 0
 	// on the first map and all registrations would be dropped) and a gamedir
 	// switch can leave a stale larger value. Bound instead at use time in
-	// SV_UpdateQCStats (PR228 rev [10]). Only the value type is checked here.
+	// SV_UpdateQCStats. Only the value type is checked here.
 	if (qcstat_type_size(type) < 0)
 	{
 		Con_Printf("csqc clientstat type %d unsupported\n", type);
@@ -1029,7 +1029,7 @@ void SV_UpdateQCStats(edict_t *ent, int *statsi, float *statsf, const char **sta
 		{
 			int sz = qcstat_type_size(q->type);
 
-			// PR228 rev [10]: bound at use, not at registration - GAME_INIT runs
+			// bound at use, not at registration - GAME_INIT runs
 			// before pr_edict_size is assigned, and a gamedir switch may leave a
 			// stale (larger) value. Skip a field that is no longer within the
 			// current entvars block instead of reading out of bounds.
@@ -1085,8 +1085,8 @@ void SV_UpdateQCStats(edict_t *ent, int *statsi, float *statsf, const char **sta
 // clientstat/pointerstat range 32..127 emitted. Live clients: gate on the
 // negotiated FTE_PEXT_CSQC ext - a CSQC-capable client that never runs csqc
 // ignores the extra stats, and csqcactive implies the ext anyway. The
-// recorder uses the same ext gate today (the demo/QTV compatibility question,
-// PR228 rev [1], is handled separately) (PR228 rev [23]).
+// recorder only gets FTE_PEXT_CSQC when sv_mvd_csqc is set (SV_MVD_Record),
+// which is also what keeps stock ezQuake/QTV demos compatible.
 qbool SV_WantsQCStats (client_t *client)
 {
 	return (client->fteprotocolextensions & FTE_PEXT_CSQC) != 0;
@@ -1152,7 +1152,7 @@ void SV_UpdateClientStats (client_t *client)
 	for (i=0 ; i<MAX_CL_STATS ; i++)
 	{
 #ifdef FTE_PEXT_CSQC
-		// PR228 rev [18]: CSQC float/string stats use their own wire opcodes
+		// CSQC float/string stats use their own wire opcodes
 		if (qcstat_kind[i] == QCSTAT_KIND_FLOAT)
 		{
 			if (statsf[i] != client->statsf[i])
@@ -1577,7 +1577,7 @@ void MVD_WriteStats(void)
 	int i, j;
 	edict_t		*ent;
 	int			statsi[MAX_CL_STATS];
-	// legacy 32 stats unless the recorder is explicitly CSQC (PR228 rev [1])
+	// legacy 32 stats unless the recorder is explicitly CSQC
 #ifdef FTE_PEXT_CSQC
 	float		statsf[MAX_CL_STATS];
 	const char	*statss[MAX_CL_STATS];
@@ -1626,7 +1626,7 @@ void MVD_WriteStats(void)
 		for (j = 0 ; j < n; j++)
 		{
 #ifdef FTE_PEXT_CSQC
-			// PR228 rev [18]: float/string stats use their own wire opcodes
+			// float/string stats use their own wire opcodes
 			if (SV_QCStatKind(j) == QCSTAT_KIND_FLOAT)
 			{
 				if (statsf[j] != demo.statsf[i][j])

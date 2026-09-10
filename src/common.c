@@ -366,7 +366,7 @@ float MSG_ReadFloat (void)
 		int l;
 	} dat;
 
-	// PR228 rev [12]: MSG_ReadFloat was the only reader without a cursize
+	// MSG_ReadFloat was the only reader without a cursize
 	// bound - a truncated message read past net_message (up to 11 bytes into
 	// .bss at max packet size). Set msg_badread and return like the other
 	// readers (FTE does the same).

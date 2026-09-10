@@ -555,9 +555,8 @@ qbool SV_PlayerVisibleToClient (client_t* client, int j, byte* pvs, edict_t* sel
 // PVS-visible CSQC entities collected during one SV_WriteEntitiesToClient call
 // (ascending by entnum): the players loop appends client edicts, the PVS loop
 // appends the rest. SV_EmitCSQCUpdate walks this list so that only visible
-// entities are sent, a PRESENT entity missing from the list is removed
-// (PR228 rev [5]) and a visible entity without PRESENT is force-resend (late
-// joiner / mid-map record, PR228 rev [4]).
+// entities are sent, a PRESENT entity missing from the list is removed, and a
+// visible entity without PRESENT is force-resend (late joiner / mid-map record).
 static edict_t **csqcent;
 static int csqcnuments;
 static int csqcmaxents;
@@ -776,8 +775,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 	uint64_t bits;
 	client_frame_t *logframe;
 	// per-entity datagram reservation: header(1) + entindex(2) + trailing 0(2),
-	// plus the 2-byte length prefix only the sized (92) variant writes
-	// (PR228 rev [15b]).
+	// plus the 2-byte length prefix only the sized (92) variant writes.
 	int reserve = (svcnumber == svc_fte_csqcentities_sized) ? 7 : 5;
 	int en, entnum;
 	qbool full = false;
@@ -846,7 +844,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 
 #ifdef USE_PR2
 		// CSQC requires a PR2 VM (SV_CSQCActive() == sv_vm != NULL), so there
-		// is no legacy PR1 path here (PR228 rev [20]). PR2_SendEntity sets
+		// is no legacy PR1 path here. PR2_SendEntity sets
 		// self/other from its args and restores them, so nothing to do here.
 		mod_result = PR2_SendEntity (ent, client->edict, (uint64_t)(bits >> SENDFLAGS_SHIFT));
 #else
@@ -856,7 +854,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 		if (csqcmsgbuffer.overflowed)
 		{	// payload too big for the per-entity scratch buffer (MAX_DATAGRAM).
 			// It can never fit the client datagram either, so requeueing the
-			// same bits every frame would spin forever (PR228 rev [14]); drop
+			// same bits every frame would spin forever; drop
 			// this entity's update with one warning and wait for a re-dirt.
 			csqcmsgbuffer.overflowed = false;
 			client->pendingcsqcbits[e] = 0;
@@ -965,7 +963,7 @@ void SV_ProcessSendFlags (client_t *c)
 	{
 		ent = EDICT_NUM(e);
 		if (ent->e.free || !ent->xv.sendentity)
-			continue;	// only entities the CSQC system owns may be flagged (PR228 rev [11a])
+			continue;	// only entities the CSQC system owns may be flagged
 		if (ent->xv.sendflags[0] || ent->xv.sendflags[1] || ent->xv.sendflags[2])
 		{
 			// pack the 3 float components into the 24-bit fields of pendingcsqcbits
@@ -1333,7 +1331,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 #ifdef FTE_PEXT_CSQC
 	// lazily allocate the per-client CSQC delta bitset, but only for clients
 	// that actually run CSQC: a PR2 server with plain players must not pay for
-	// it (PR228 rev [9]). SV_EnableClientsCSQC arms it earlier on enablecsqc.
+	// it. SV_EnableClientsCSQC arms it earlier on enablecsqc.
 	if (SV_CSQCActive() && client->csqcactive && !client->pendingcsqcbits && sv.max_edicts > 0)
 	{
 		client->pendingcsqcbits = Q_calloc(sv.max_edicts, sizeof(uint64_t));
