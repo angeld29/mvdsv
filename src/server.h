@@ -168,6 +168,7 @@ typedef unsigned short	csqc_log_t;
 
 // sv_ents.c
 extern sizebuf_t csqcmsgbuffer;
+void SV_FreeCSQCList (void);   // release the per-frame CSQC PVS entity list
 // sv_main.c
 extern cvar_t sv_csqcdebug;
 // sv_init.c

@@ -449,6 +449,9 @@ static int TranslateEffects (edict_t *ent)
 SV_MVD_WritePlayersToClient
 =============
 */
+#ifdef FTE_PEXT_CSQC
+static qbool SV_AddCSQCUpdate (client_t *client, edict_t *ent);
+#endif
 static void SV_MVD_WritePlayersToClient ( void )
 {
 	int j;
@@ -468,6 +471,13 @@ static void SV_MVD_WritePlayersToClient ( void )
 			continue;
 
 		ent = cl->edict;
+
+#ifdef FTE_PEXT_CSQC
+		// keep the recorder's CSQC PVS list complete: players are not visited by
+		// the entities loop (it starts at MAX_CLIENTS+1), so collect them here
+		// to avoid the CSQC remove pass dropping an existing player entity.
+		SV_AddCSQCUpdate (&demo.recorder, ent);
+#endif
 
 		dcl->parsecount = demo.parsecount;
 
@@ -542,6 +552,23 @@ qbool SV_PlayerVisibleToClient (client_t* client, int j, byte* pvs, edict_t* sel
 }
 
 #ifdef FTE_PEXT_CSQC
+// PVS-visible CSQC entities collected during one SV_WriteEntitiesToClient call
+// (ascending by entnum): the players loop appends client edicts, the PVS loop
+// appends the rest. SV_EmitCSQCUpdate walks this list so that only visible
+// entities are sent, a PRESENT entity missing from the list is removed
+// (PR228 rev [5]) and a visible entity without PRESENT is force-resend (late
+// joiner / mid-map record, PR228 rev [4]).
+static edict_t **csqcent;
+static int csqcnuments;
+static int csqcmaxents;
+
+void SV_FreeCSQCList (void)
+{
+	Q_free (csqcent);
+	csqcnuments = 0;
+	csqcmaxents = 0;
+}
+
 /*
 =============
 SV_AddCSQCUpdate
@@ -555,8 +582,22 @@ static qbool SV_AddCSQCUpdate (client_t *client, edict_t *ent)
 	if (!ent->xv.sendentity)
 		return false;
 
+	if (ent->e.free)
+		return false;
+
 	if (!client->csqcactive)
 		return false;
+
+	if (csqcnuments >= csqcmaxents)
+	{	// grow the per-frame list (normally sized to sv.max_edicts)
+		int newmax = csqcnuments + 256;
+		edict_t **grown = realloc (csqcent, (size_t)newmax * sizeof(*csqcent));
+		if (!grown)
+			return false;	// out of memory: fall back to packetentities
+		csqcent = grown;
+		csqcmaxents = newmax;
+	}
+	csqcent[csqcnuments++] = ent;
 
 	return true;
 }
@@ -661,6 +702,52 @@ void SV_AckEntityFrame (client_t *client, int framenum)
 	for (; frame < framenum; frame++)
 		SV_CSQC_DroppedPacket (client, frame);
 }
+
+/*
+=============
+SV_CSQC_EmitRemove
+
+Emits a remove for entity `e` when it has PRESENT|REMOVED pending. Entities
+that were never sent are just cleared (no bogus remove). Returns false when the
+datagram is full (caller must stop and retry next frame).
+=============
+*/
+static qbool SV_CSQC_EmitRemove (client_t *client, sizebuf_t *msg, int svcnumber,
+                                 qbool *writtenheader, client_frame_t *logframe, int e)
+{
+	uint64_t bits;
+
+	if (e >= client->max_net_ents)
+		return true;
+
+	bits = client->pendingcsqcbits[e];
+	if (!(bits & (SENDFLAGS_PRESENT | SENDFLAGS_REMOVED)))
+	{
+		client->pendingcsqcbits[e] = 0;	// never sent - nothing to remove
+		return true;
+	}
+
+	if (!(bits & SENDFLAGS_REMOVED) && e < sv.num_edicts)
+	{
+		edict_t *ent = EDICT_NUM(e);
+		if (!ent->e.free && ((int)ent->xv.pvsflags & PVSF_NOREMOVE))
+			return true;	// client keeps it; only a remove-resend may take it away
+	}
+
+	if (msg->cursize + 5 >= msg->maxsize)
+		return false;	// overflow - retry next frame
+
+	if (!*writtenheader)
+	{
+		*writtenheader = true;
+		MSG_WriteByte (msg, svcnumber);
+	}
+
+	SV_EmitDeltaEntIndex (msg, e, true);
+	SV_CSQC_LogAdd (client, logframe, e);
+	client->pendingcsqcbits[e] = 0;
+	return true;
+}
 #endif
 
 /*
@@ -671,7 +758,7 @@ Writes the svc_fte_csqcentities lump (delta compressed against the
 persistent per-client pendingcsqcbits[]).
 =============
 */
-static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
+static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, qbool allow_removes)
 {
 	byte messagebuffer[MAX_DATAGRAM];
 	int e;
@@ -683,6 +770,8 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 	// plus the 2-byte length prefix only the sized (92) variant writes
 	// (PR228 rev [15b]).
 	int reserve = (svcnumber == svc_fte_csqcentities_sized) ? 7 : 5;
+	int en, entnum;
+	qbool full = false;
 
 	//we don't check that we got some already - because this is delta compressed!
 
@@ -706,39 +795,30 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 
 	SZ_InitEx (&csqcmsgbuffer, messagebuffer, sizeof(messagebuffer), true);
 
-	for (e = 1; e < sv.num_edicts && e < client->max_net_ents; e++)
+	// Walk the PVS-visible list (ascending entnum). Entities with PRESENT bits
+	// that are not in the list left the PVS (or were freed) and are removed;
+	// visible entities without PRESENT are force-resend (late joiner, [4]).
+	entnum = 1;
+	for (en = 0; en < csqcnuments; en++, entnum++)
 	{
 		int mod_result = 0;
-		bits = client->pendingcsqcbits[e];
-		if (!bits)
-			continue;
+		int ve_num = NUM_FOR_EDICT (csqcent[en]);
 
-		ent = EDICT_NUM(e);
-		if (ent->e.free || !ent->xv.sendentity)
-		{	// entity is gone or no longer wants CSQC - remove it from the client
-			if (!(bits & SENDFLAGS_REMOVED))
+		for (; allow_removes && entnum < ve_num; entnum++)
+		{
+			if (!SV_CSQC_EmitRemove (client, msg, svcnumber, &writtenheader, logframe, entnum))
 			{
-				if (bits & SENDFLAGS_PRESENT)
-				{	// the client has it and it vanished: only honor NOREMOVE on a resend
-					if ((int)ent->xv.pvsflags & PVSF_NOREMOVE)
-						continue;
-				}
+				full = true;
+				break;
 			}
-			if (msg->cursize + 5 >= msg->maxsize)
-				break;	// overflow, try again next frame
-
-			if (!writtenheader)
-			{
-				writtenheader = true;
-				MSG_WriteByte (msg, svcnumber);
-			}
-
-			SV_EmitDeltaEntIndex (msg, e, true);
-			SV_CSQC_LogAdd (client, logframe, e);
-			client->pendingcsqcbits[e] = 0;
-			continue;
 		}
+		if (full)
+			break;
 
+		ent = csqcent[en];
+		e = ve_num;
+
+		bits = client->pendingcsqcbits[e];
 		if (bits == SENDFLAGS_PRESENT)
 			continue;	// nothing changed
 
@@ -787,7 +867,10 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			{
 				client->pendingcsqcbits[e] = bits;
 				if (csqcmsgbuffer.cursize < 32)
+				{
+					full = true;
 					break;
+				}
 				continue;	// might be able to fit a different ent in there
 			}
 
@@ -816,6 +899,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			if (msg->cursize + 5 >= msg->maxsize)
 			{
 				client->pendingcsqcbits[e] = bits;
+				full = true;
 				break;
 			}
 
@@ -830,11 +914,21 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 		}
 	}
 
+	// entities after the last PVS-visible one left the PVS / were freed
+	if (!full && allow_removes)
+	{
+		for (; entnum < client->max_net_ents && entnum < sv.num_edicts; entnum++)
+			if (!SV_CSQC_EmitRemove (client, msg, svcnumber, &writtenheader, logframe, entnum))
+				break;
+	}
+
 	if (writtenheader)
 		MSG_WriteShort (msg, 0);	// a 0 means no more.
 
 	if ((int)sv_csqcdebug.value == 2)
 		Con_Printf("CSQC-EMIT done cur=%d writtenheader=%d\n", msg->cursize, writtenheader);
+
+	csqcnuments = 0;	// the list is rebuilt for the next client/frame
 
 	// prevent the qc from trying to use it at inopertune times.
 	csqcmsgbuffer.maxsize = 0;
@@ -1236,6 +1330,19 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 		client->pendingcsqcbits = Q_calloc(sv.max_edicts, sizeof(uint64_t));
 		client->max_net_ents = sv.max_edicts;
 	}
+
+	// (re)start this client's PVS-visible CSQC entity list; size it once to the
+	// current map's edict count (freed on shutdown)
+	csqcnuments = 0;
+	if (sv.max_edicts > 0 && csqcmaxents < sv.max_edicts)
+	{
+		edict_t **grown = realloc (csqcent, (size_t)sv.max_edicts * sizeof(*csqcent));
+		if (grown)
+		{
+			csqcent = grown;
+			csqcmaxents = sv.max_edicts;
+		}
+	}
 #endif
 	qbool disable_updates; // disables sending entities to the client
 	int e, i, max_packet_entities;
@@ -1438,7 +1545,9 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 	// CSQC entity lump (delta-compressed), after the regular packetentities.
 	// The sized (92) variant is only for live CSQC clients under sv_csqcdebug;
 	// recorded demos keep the plain (76) form so they play back elsewhere.
-	SV_EmitCSQCUpdate (client, msg, (recorder || !(int)sv_csqcdebug.value) ? svc_fte_csqcentities : svc_fte_csqcentities_sized);
+	// Removes are suppressed during a server-flash (disable_updates) frame,
+	// where the PVS loop below did not collect the full visible set.
+	SV_EmitCSQCUpdate (client, msg, (recorder || !(int)sv_csqcdebug.value) ? svc_fte_csqcentities : svc_fte_csqcentities_sized, !disable_updates);
 #endif
 
 	// now add the specialized nail update

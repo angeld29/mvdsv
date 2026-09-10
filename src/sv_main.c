@@ -264,6 +264,9 @@ void SV_Shutdown (char *finalmsg)
 #endif
 
 	// Shutdown game.
+#ifdef FTE_PEXT_CSQC
+	SV_FreeCSQCList ();
+#endif
 	PR_GameShutDown();
 	PR_UnLoadProgs();
 
