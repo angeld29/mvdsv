@@ -554,6 +554,12 @@ inrange:
 				MVD_SZ_Write(sv.multicast.data, sv.multicast.cursize);
 			}
 		}
+#ifdef FTE_PEXT_CSQC
+		else if (csqc_only && !SV_WantsQCStats(&demo.recorder)) {
+			// CSQC-only message to a stock-compatible recorder: keep it out of
+			// the MVD/QTV stream (PR228 rev [1b])
+		}
+#endif
 		else if (reliable) {
 			if (MVDWrite_Begin(dem_all, 0, sv.multicast.cursize)) {
 				MVD_SZ_Write(sv.multicast.data, sv.multicast.cursize);

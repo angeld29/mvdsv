@@ -52,6 +52,9 @@ cvar_t	sv_ondemoremove		= {"sv_onDemoRemove",	""};
 cvar_t	sv_demoRegexp		= {"sv_demoRegexp",		"\\.mvd(\\.(gz|bz2|rar|zip))?$"};
 
 cvar_t	sv_silentrecord		= {"sv_silentrecord",   "0"};
+// opt-in: record the CSQC stream (svc 76/83, stats 32..127) into MVD/QTV. Off
+// by default because stock ezQuake/QTV cannot parse it (PR228 rev [1]/[1b]).
+cvar_t	sv_mvd_csqc			= {"sv_mvd_csqc",		"0"};
 
 cvar_t	extralogname		= {"extralogname",		"unset"}; // no sv_ prefix? WTF!
 
@@ -1282,7 +1285,9 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 	demo.recorder.fteprotocolextensions |= FTE_PEXT_COLOURMOD;
 #endif
 #ifdef FTE_PEXT_CSQC
-	if (SV_CSQCActive())
+	// Only arm the recorder for CSQC when explicitly opted in: by default the
+	// MVD/QTV stream must stay parseable by stock ezQuake/QTV (PR228 rev [1b]).
+	if (SV_CSQCActive() && (int)sv_mvd_csqc.value)
 	{
 		demo.recorder.fteprotocolextensions |= FTE_PEXT_CSQC;
 		demo.recorder.csqcactive = true;
@@ -1916,6 +1921,7 @@ static void MVD_Init (void)
 	Cvar_Register (&sv_demoExtraNames);
 	Cvar_Register (&sv_demoRegexp);
 	Cvar_Register (&sv_silentrecord);
+	Cvar_Register (&sv_mvd_csqc);
 
 	Cvar_Register (&extralogname);
 
