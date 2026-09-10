@@ -137,6 +137,18 @@ typedef struct
 
 #define MSG_CSQC		5		// for csqc (pr2_cmds.c WriteDest2)
 
+// CSQC stat wire opcodes for fractional/string stats (PR228 rev [18]).
+// FTE defines svcfte_updatestatstring/updatestatfloat as 78/79; upstream
+// qwprot/ezQuake do not, so mvdsv currently truncates such stats to int in
+// SV_UpdateQCStats. Define them locally (guarded) so the float/string emit
+// path can light up once qwprot carries them, without colliding meanwhile.
+#ifndef svcfte_updatestatstring
+#define svcfte_updatestatstring	78	// [byte statnum] [string]
+#endif
+#ifndef svcfte_updatestatfloat
+#define svcfte_updatestatfloat	79	// [byte statnum] [float]
+#endif
+
 // per-entity CSQC delta flags, mirror of FTE server.h SENDFLAGS_*
 #define SENDFLAGS_PRESENT	0x1u	// this entity is present on that client
 #define SENDFLAGS_REMOVED	0x2u	// to handle remove packetloss
@@ -859,6 +871,8 @@ void SV_DropClient (client_t *drop);
 // sv_ents.c - CSQC loss recovery (FTE SV_AckEntityFrame / SV_CSQC_DroppedPacket)
 void SV_AckEntityFrame (client_t *client, int framenum);
 void SV_CSQC_DroppedPacket (client_t *client, int sequence);
+// sv_send.c - emit CSQC stats 32..127 to this destination (live client / recorder)
+qbool SV_WantsQCStats (client_t *client);
 #endif
 
 int SV_CalcPing (client_t *cl);

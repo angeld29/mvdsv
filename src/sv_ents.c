@@ -675,7 +675,6 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 {
 	byte messagebuffer[MAX_DATAGRAM];
 	int e;
-	int viewerent;
 	edict_t *ent;
 	qbool writtenheader = false;
 	uint64_t bits;
@@ -700,11 +699,6 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 			logframe->csqc_log_overflow = false;
 		}
 	}
-
-	if (client->edict)
-		viewerent = EDICT_TO_PROG(client->edict);
-	else
-		viewerent = 0; /*for mvds, its as if world is looking*/
 
 	SZ_InitEx (&csqcmsgbuffer, messagebuffer, sizeof(messagebuffer), true);
 
@@ -758,25 +752,13 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 		csqcmsgbuffer.cursize = 0;
 
 #ifdef USE_PR2
-		if (sv_vm)
-		{
-			pr_global_struct->self = EDICT_TO_PROG(ent);
-			pr_global_struct->other = viewerent;
-			mod_result = PR2_SendEntity (ent, client->edict, (uint64_t)(bits >> SENDFLAGS_SHIFT));
-		}
-		else
+		// CSQC requires a PR2 VM (SV_CSQCActive() == sv_vm != NULL), so there
+		// is no legacy PR1 path here (PR228 rev [20]). PR2_SendEntity sets
+		// self/other from its args and restores them, so nothing to do here.
+		mod_result = PR2_SendEntity (ent, client->edict, (uint64_t)(bits >> SENDFLAGS_SHIFT));
+#else
+		mod_result = 0;
 #endif
-		{
-			int old_self = pr_global_struct->self;
-			pr_global_struct->self = EDICT_TO_PROG(ent);
-			G_INT(OFS_PARM0) = viewerent;
-			G_FLOAT(OFS_PARM1+0) = (int)((bits >> (SENDFLAGS_SHIFT+ 0)) & 0xffffff);
-			G_FLOAT(OFS_PARM1+1) = (int)((bits >> (SENDFLAGS_SHIFT+24)) & 0xffffff);
-			G_FLOAT(OFS_PARM1+2) = (int)((bits >> (SENDFLAGS_SHIFT+48)) & 0xffffff);
-			PR_ExecuteProgram (ent->xv.sendentity);
-			mod_result = G_INT(OFS_RETURN);
-			pr_global_struct->self = old_self;
-		}
 
 		if (csqcmsgbuffer.overflowed)
 		{	// payload too big for the per-entity scratch buffer (MAX_DATAGRAM).
@@ -1441,7 +1423,7 @@ void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 #ifdef FTE_PEXT_CSQC
 	// CSQC entity lump (delta-compressed), after the regular packetentities.
 	// The sized (92) variant is only for live CSQC clients under sv_csqcdebug;
-	// recorded demos keep the plain (76) form so they play back elsewhere (F6).
+	// recorded demos keep the plain (76) form so they play back elsewhere.
 	SV_EmitCSQCUpdate (client, msg, (recorder || !(int)sv_csqcdebug.value) ? svc_fte_csqcentities : svc_fte_csqcentities_sized);
 #endif
 

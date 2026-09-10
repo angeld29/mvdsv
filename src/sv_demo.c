@@ -1691,10 +1691,8 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 		stats[STAT_ITEMS] = (int) ent->v->items | ((int) PR_GLOBAL(serverflags) << 28);
 
 #ifdef FTE_PEXT_CSQC
-		// clientstat/pointerstat registered stats (32..127) - only for the
-		// MVD recorder, which has FTE_PEXT_CSQC set while recording.
-		// TODO (F13): same csqcactive-vs-ext gate question as SV_UpdateClientStats.
-		if (demo.recorder.fteprotocolextensions & FTE_PEXT_CSQC)
+		// clientstat/pointerstat registered stats (32..127) for the recorder.
+		if (SV_WantsQCStats (&demo.recorder))
 			SV_UpdateQCStats (ent, stats);
 #endif
 

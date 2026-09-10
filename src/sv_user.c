@@ -3126,6 +3126,11 @@ void SV_EnableClientsCSQC(void)
 	if (!SV_CSQCActive())
 		return; // PR1 mod: no CSQC support, ignore the client request
 
+	// a client that never negotiated FTE_PEXT_CSQC must not be enabled - svc 76
+	// would be sent to a client that Host_Errors on it (PR228 rev [17]).
+	if (!(sv_client->fteprotocolextensions & FTE_PEXT_CSQC))
+		return;
+
 	sv_client->csqcactive = true;
 
 	// the client just (re)enabled csqc: resend all entities it already has
@@ -4487,7 +4492,8 @@ static void SV_DebugServerSideWeaponScript(client_t* cl, int best_impulse)
 #endif
 
 #ifdef FTE_PEXT_CSQC
-// sendevent type codes (design doc ezquake_csqc_pr2.md §5.2); engine and mod must agree
+// sendevent argument value type codes delivered to the mod via qcrequestarg;
+// engine and mod must agree on these values.
 #define QCREQ_T_FLOAT	0
 #define QCREQ_T_VECTOR	1
 #define QCREQ_T_STRING	2
@@ -4497,7 +4503,7 @@ static void SV_DebugServerSideWeaponScript(client_t* cl, int best_impulse)
 
 // wire type codes (FTE etype convention; mvdsv's own etype_t lacks the
 // extended integer/pointer types). Consumed by width so a client using the
-// richer FTE types is not dropped (F9).
+// richer FTE types is not dropped.
 #define QCREQ_EV_INTEGER	8
 #define QCREQ_EV_UINT		9
 #define QCREQ_EV_INT64		10
@@ -4509,9 +4515,9 @@ static void SV_DebugServerSideWeaponScript(client_t* cl, int best_impulse)
 SV_ReadQCRequest
 
 Parses a clcfte_qcrequest (client CSQC sendevent) message and stores it for
-the game: PR2 -> GAME_QCREQUEST export (the mod fetches the event name via
-trap_Argv(0) and typed arg values via the qcrequestarg trap), PR1 -> CSEv_*
-function.
+the game: on a PR2 VM it is dispatched to the GAME_QCREQUEST export (the mod
+fetches the event name via trap_Argv(0) and typed arg values via the
+qcrequestarg trap).
 
 Wire layout (client->server, matches the FTE csqc writer PF_cs_sendevent):
   for each arg: [byte type] [value]
@@ -4543,7 +4549,7 @@ typedef struct
 } qcrequest_arg_t;
 
 // state of the qcrequest currently being dispatched; valid only during the
-// GAME_QCREQUEST call / PR1 CSEv_* execute
+// GAME_QCREQUEST call.
 static qcrequest_arg_t qcrequest_args[6];
 static int qcrequest_argc;
 static char qcrequest_eventname[128];
@@ -4614,9 +4620,10 @@ SV_ReadQCRequest
 
 Parses (and optionally dispatches) a clcfte_qcrequest. When `dispatch` is
 false the wire payload is still fully consumed (typed args + event name) but
-no mod export / PR1 CSEv_* is invoked - used to safely swallow a sendevent
-on a server whose loaded mod is PR1 (no CSQC) so the bytes are not re-parsed
-as clc opcodes (PR228 rev [6]).
+no mod export is invoked - used to safely swallow a sendevent on a server
+whose loaded mod is PR1 (no CSQC) so the bytes are not re-parsed as clc
+opcodes (PR228 rev [6]). Dispatch (true) always means a PR2 VM, so only
+GAME_QCREQUEST is reached (PR228 rev [20]).
 ===================
 */
 static void SV_ReadQCRequest(qbool dispatch)
@@ -4691,14 +4698,7 @@ static void SV_ReadQCRequest(qbool dispatch)
 		case QCREQ_EV_DOUBLE:
 			args[i] = '?';	// 64-bit/double: no PR2 slot, consume and skip
 			qcrequest_args[i].type = QCREQ_T_UNKNOWN;
-			MSG_ReadByte();	// 8 bytes
-			MSG_ReadByte();
-			MSG_ReadByte();
-			MSG_ReadByte();
-			MSG_ReadByte();
-			MSG_ReadByte();
-			MSG_ReadByte();
-			MSG_ReadByte();
+			MSG_ReadSkip(8);	// 8 bytes; stops itself on badread (PR228 rev [19])
 			break;
 		case ev_pointer:
 			args[i] = 'p';
@@ -4714,8 +4714,7 @@ static void SV_ReadQCRequest(qbool dispatch)
 					msg_badread = true;
 					return;
 				}
-				while (len-- > 0)
-					MSG_ReadByte();
+				MSG_ReadSkip(len);	// stops itself on badread (PR228 rev [19])
 			}
 			else
 			{
@@ -4769,34 +4768,12 @@ done:
 	if (!dispatch)
 		return;	// consumed the payload only (e.g. PR1 mod: CSQC off)
 
-	if (sv_vm)
-	{	// PR2: fixed export. self=client, arg0=argcount; the mod pulls the
-		// event name via trap_Argv(0) and arg values via the qcrequestarg trap.
-		PR2_QCRequest(sv_client->edict, qcrequest_argc);
-	}
-	else
-	{	// PR1: lookup CSEv_<name>_<args>
-		// NOTE (Package B): PR1 argument delivery (parm slots / temp-strings)
-		// is not implemented yet - CSQC is gated off for PR1 mods.
-		extern func_t ED_FindFunctionOffset (char *name);
-		char fname[128];
-		func_t f;
-
-		snprintf(fname, sizeof(fname), "CSEv_%s_%s", rname, args);
-		f = ED_FindFunctionOffset(fname);
-		if (!f && i == 0)
-		{
-			snprintf(fname, sizeof(fname), "CSEv_%s", rname);
-			f = ED_FindFunctionOffset(fname);
-		}
-		if (!f)
-		{
-			SV_ClientPrintf(sv_client, PRINT_HIGH, "qcrequest \"%s\" not supported\n", rname);
-			return;
-		}
-		pr_global_struct->self = EDICT_TO_PROG(sv_client->edict);
-		PR_ExecuteProgram(f);
-	}
+	// PR2: fixed export. self=client, arg0=argcount; the mod pulls the event
+	// name via trap_Argv(0) and arg values via the qcrequestarg trap. The PR1
+	// CSEv_* branch was unreachable here - dispatch is only true when
+	// SV_CSQCActive() (sv_vm != NULL), PR1 calls come with dispatch=false and
+	// return above (PR228 rev [20]).
+	PR2_QCRequest(sv_client->edict, qcrequest_argc);
 }
 #endif
 

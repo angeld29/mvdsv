@@ -226,9 +226,12 @@ void SV_UpdateCSQCExtension(void)
 static void SV_LoadCSQC(void)
 {
 	extern cvar_t sv_csqc_progname;
+	byte *file;
 	int size;
 
-	if (!SV_CSQCActive())
+	// "no csprogs" state (checksum 0 + empty star keys) covers both the PR1
+	// (no CSQC at all) and the missing-csprogs-file cases; set it in one place.
+	if (!SV_CSQCActive() || !(file = FS_LoadTempFile(sv_csqc_progname.string, &size)))
 	{
 		sv.csqcchecksum = 0;
 		Info_SetValueForStarKey(svs.info, "*csprogs", "", MAX_SERVERINFO_STRING);
@@ -237,8 +240,6 @@ static void SV_LoadCSQC(void)
 		return;
 	}
 
-	byte *file = FS_LoadTempFile(sv_csqc_progname.string, &size);
-	if (file)
 	{
 		char text[64];
 		sv.csqcchecksum = Com_BlockChecksum(file, size);
@@ -247,13 +248,6 @@ static void SV_LoadCSQC(void)
 		sprintf(text, "0x%x", (unsigned int)size);
 		Info_SetValueForStarKey(svs.info, "*csprogssize", text, MAX_SERVERINFO_STRING);
 		Info_SetValueForStarKey(svs.info, "*csprogsname", sv_csqc_progname.string, MAX_SERVERINFO_STRING);
-	}
-	else
-	{
-		sv.csqcchecksum = 0;
-		Info_SetValueForStarKey(svs.info, "*csprogs", "", MAX_SERVERINFO_STRING);
-		Info_SetValueForStarKey(svs.info, "*csprogssize", "", MAX_SERVERINFO_STRING);
-		Info_SetValueForStarKey(svs.info, "*csprogsname", "", MAX_SERVERINFO_STRING);
 	}
 }
 #endif

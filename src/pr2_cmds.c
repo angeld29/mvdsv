@@ -1192,7 +1192,7 @@ MESSAGE WRITING
 #define	MSG_ALL			2		// reliable to all
 #define	MSG_INIT		3		// write to the init string
 #define	MSG_MULTICAST	4		// for multicast()
-// MSG_CSQC (5) is defined once in server.h, not duplicated here (F11)
+// MSG_CSQC (5) is defined once in server.h, not duplicated here.
 
 
 sizebuf_t *WriteDest2(int dest)
@@ -2114,8 +2114,10 @@ intptr_t EXT_globalstat(intptr_t *args)
 // GAME_QCREQUEST callback.
 intptr_t EXT_QCRequestArg(intptr_t *args)
 {
-	if (args[3] > 0)
-		VM_CheckBounds(sv_vm, args[2], args[3]);
+	// trap_qcrequestarg(idx, buf, size)
+	if (args[3] <= 0)
+		return -1;	// negative size would skip VM_CheckBounds and turn into a huge dstsize
+	VM_CheckBounds(sv_vm, args[2], args[3]);
 	return SV_QCRequestArg(args[1], VMA(2), args[3]);
 }
 #endif
