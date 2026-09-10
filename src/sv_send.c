@@ -882,6 +882,7 @@ when a reliable message can be delivered this frame.
 */
 #ifdef FTE_PEXT_CSQC
 // etype codes passed by mods (FTE convention; mvdsv's own etype_t lacks ev_integer)
+#define CSQC_EV_STRING		1
 #define CSQC_EV_FLOAT		2
 #define CSQC_EV_VECTOR		3
 #define CSQC_EV_ENTITY		4
@@ -896,8 +897,19 @@ typedef struct
 	qbool	isfield;	// true = clientstat (per-client field), false = pointerstat (global)
 } qcstat_t;
 
+// wire kind of a registered statnum (drives the emit opcode): 0 = int (nothing
+// registered), 1 = float, 2 = string. Filled by SV_QCStatEval, cleared with the
+// registrations.
 static qcstat_t qcstats[MAX_CL_STATS];
 static unsigned int numqcstats;
+static signed char qcstat_kind[MAX_CL_STATS];
+
+int SV_QCStatKind (int statnum)
+{
+	if (statnum < 0 || statnum >= MAX_CL_STATS)
+		return QCSTAT_KIND_INT;
+	return qcstat_kind[statnum];
+}
 
 // byte size of the value the mod reads for a given stat type (used to bound
 // the field offset against the entvars block)
@@ -908,6 +920,7 @@ static int qcstat_type_size(int type)
 	case CSQC_EV_FLOAT:
 	case CSQC_EV_ENTITY:
 	case CSQC_EV_INTEGER:
+	case CSQC_EV_STRING:
 		return 4;
 	case CSQC_EV_VECTOR:
 		return 12;
@@ -922,6 +935,7 @@ static int qcstat_type_size(int type)
 void SV_ClearQCStats(void)
 {
 	numqcstats = 0;
+	memset(qcstat_kind, 0, sizeof(qcstat_kind));
 }
 
 static void SV_QCStatEval(int type, int statnum, int fieldofs, void *ptr, qbool isfield)
@@ -959,6 +973,16 @@ static void SV_QCStatEval(int type, int statnum, int fieldofs, void *ptr, qbool 
 	qcstats[i].fieldofs = fieldofs;
 	qcstats[i].ptr = ptr;
 	qcstats[i].isfield = isfield;
+
+	// wire kind drives the emit opcode (a vector occupies 3 float slots)
+	qcstat_kind[statnum] = (type == CSQC_EV_STRING) ? QCSTAT_KIND_STRING
+	                     : (type == CSQC_EV_FLOAT || type == CSQC_EV_VECTOR) ? QCSTAT_KIND_FLOAT
+	                     : QCSTAT_KIND_INT;
+	if (type == CSQC_EV_VECTOR)
+	{
+		qcstat_kind[statnum + 1] = QCSTAT_KIND_FLOAT;
+		qcstat_kind[statnum + 2] = QCSTAT_KIND_FLOAT;
+	}
 }
 
 // clientstat: register a per-client stat from a field offset into the mod's entvars
@@ -992,7 +1016,7 @@ void SV_QCStatGlobal(int type, const char *name, int statnum)
 	Con_Printf("globalstat \"%s\" unsupported on PR2, use pointerstat\n", name);
 }
 
-void SV_UpdateQCStats(edict_t *ent, int *stats)
+void SV_UpdateQCStats(edict_t *ent, int *statsi, float *statsf, const char **statss)
 {
 	unsigned int i;
 
@@ -1024,12 +1048,12 @@ void SV_UpdateQCStats(edict_t *ent, int *stats)
 		switch (q->type)
 		{
 		case CSQC_EV_FLOAT:
-			stats[q->statnum] = (int)eval->_float;
+			statsf[q->statnum] = eval->_float;
 			break;
 		case CSQC_EV_VECTOR:
-			stats[q->statnum + 0] = (int)eval->vector[0];
-			stats[q->statnum + 1] = (int)eval->vector[1];
-			stats[q->statnum + 2] = (int)eval->vector[2];
+			statsf[q->statnum + 0] = eval->vector[0];
+			statsf[q->statnum + 1] = eval->vector[1];
+			statsf[q->statnum + 2] = eval->vector[2];
 			break;
 		case CSQC_EV_ENTITY:
 			{
@@ -1037,11 +1061,19 @@ void SV_UpdateQCStats(edict_t *ent, int *stats)
 				// non-entity float; never let it index sv.edicts (FTE returns
 				// world for out-of-range values instead of crashing).
 				unsigned int idx = (unsigned int)eval->edict / pr_edict_size;
-				stats[q->statnum] = (idx < (unsigned int)sv.num_edicts) ? (int)idx : 0;
+				statsi[q->statnum] = (idx < (unsigned int)sv.num_edicts) ? (int)idx : 0;
 				break;
 			}
 		case CSQC_EV_INTEGER:
-			stats[q->statnum] = eval->_int;
+			statsi[q->statnum] = eval->_int;
+			break;
+		case CSQC_EV_STRING:
+			// a QC string field holds a string_t reference; resolve it (PR2)
+#ifdef USE_PR2
+			statss[q->statnum] = PR2_GetString(eval->string);
+#else
+			statss[q->statnum] = PR_GetEntityString(eval->string);
+#endif
 			break;
 		default:
 			break;
@@ -1064,9 +1096,16 @@ qbool SV_WantsQCStats (client_t *client)
 void SV_UpdateClientStats (client_t *client)
 {
 	edict_t *ent;
-	int stats[MAX_CL_STATS], i;
+	int statsi[MAX_CL_STATS], i;
+#ifdef FTE_PEXT_CSQC
+	float statsf[MAX_CL_STATS];
+	const char *statss[MAX_CL_STATS];
 
-	memset (stats, 0, sizeof(stats));
+	memset (statsf, 0, sizeof(statsf));
+	memset (statss, 0, sizeof(statss));
+#endif
+
+	memset (statsi, 0, sizeof(statsi));
 
 	ent = client->edict;
 
@@ -1086,47 +1125,96 @@ void SV_UpdateClientStats (client_t *client)
 			ent = svs.clients[trackent - 1].edict;
 	}
 
-	stats[STAT_HEALTH] = ent->v->health;
-	stats[STAT_WEAPON] = SV_ModelIndex(PR_GetEntityString(ent->v->weaponmodel));
-	stats[STAT_AMMO] = ent->v->currentammo;
-	stats[STAT_ARMOR] = ent->v->armorvalue;
-	stats[STAT_SHELLS] = ent->v->ammo_shells;
-	stats[STAT_NAILS] = ent->v->ammo_nails;
-	stats[STAT_ROCKETS] = ent->v->ammo_rockets;
-	stats[STAT_CELLS] = ent->v->ammo_cells;
+	statsi[STAT_HEALTH] = ent->v->health;
+	statsi[STAT_WEAPON] = SV_ModelIndex(PR_GetEntityString(ent->v->weaponmodel));
+	statsi[STAT_AMMO] = ent->v->currentammo;
+	statsi[STAT_ARMOR] = ent->v->armorvalue;
+	statsi[STAT_SHELLS] = ent->v->ammo_shells;
+	statsi[STAT_NAILS] = ent->v->ammo_nails;
+	statsi[STAT_ROCKETS] = ent->v->ammo_rockets;
+	statsi[STAT_CELLS] = ent->v->ammo_cells;
 	if (!client->spectator || client->spec_track > 0)
-		stats[STAT_ACTIVEWEAPON] = ent->v->weapon;
+		statsi[STAT_ACTIVEWEAPON] = ent->v->weapon;
 	// stuff the sigil bits into the high bits of items for sbar
-	stats[STAT_ITEMS] = (int) ent->v->items | ((int) PR_GLOBAL(serverflags) << 28);
+	statsi[STAT_ITEMS] = (int) ent->v->items | ((int) PR_GLOBAL(serverflags) << 28);
 	if (fofs_items2)	// ZQ_ITEMS2 extension
-		stats[STAT_ITEMS] |= (int)EdictFieldFloat(ent, fofs_items2) << 23;
+		statsi[STAT_ITEMS] |= (int)EdictFieldFloat(ent, fofs_items2) << 23;
 
 	if (ent->v->health > 0 || client->spectator) // viewheight for PF_DEAD & PF_GIB is hardwired
-		stats[STAT_VIEWHEIGHT] = ent->v->view_ofs[2];
+		statsi[STAT_VIEWHEIGHT] = ent->v->view_ofs[2];
 
 #ifdef FTE_PEXT_CSQC
 	// clientstat/pointerstat registered stats (32..127), only for CSQC clients.
 	if (SV_WantsQCStats (client))
-		SV_UpdateQCStats (ent, stats);
+		SV_UpdateQCStats (ent, statsi, statsf, statss);
 #endif
 
 	for (i=0 ; i<MAX_CL_STATS ; i++)
-		if (stats[i] != client->stats[i])
+	{
+#ifdef FTE_PEXT_CSQC
+		// PR228 rev [18]: CSQC float/string stats use their own wire opcodes
+		if (qcstat_kind[i] == QCSTAT_KIND_FLOAT)
 		{
-			client->stats[i] = stats[i];
-			if (stats[i] >=0 && stats[i] <= 255)
+			if (statsf[i] != client->statsf[i])
+			{
+				int iv = (int)statsf[i];
+
+				client->statsf[i] = statsf[i];
+				client->stats[i] = iv;	// keep the int cache in sync
+				if (statsf[i] && statsf[i] != (float)iv)
+				{
+					ClientReliableWrite_Begin(client, svcfte_updatestatfloat, 6);
+					ClientReliableWrite_Byte(client, i);
+					ClientReliableWrite_Float(client, statsf[i]);
+				}
+				else if (iv >= 0 && iv <= 255)
+				{
+					ClientReliableWrite_Begin(client, svc_updatestat, 3);
+					ClientReliableWrite_Byte(client, i);
+					ClientReliableWrite_Byte(client, iv);
+				}
+				else
+				{
+					ClientReliableWrite_Begin(client, svc_updatestatlong, 6);
+					ClientReliableWrite_Byte(client, i);
+					ClientReliableWrite_Long(client, iv);
+				}
+			}
+			continue;
+		}
+		if (qcstat_kind[i] == QCSTAT_KIND_STRING)
+		{
+			const char *s = statss[i] ? statss[i] : "";
+
+			if (!client->statss[i] || strcmp(client->statss[i], s))
+			{
+				if (client->statss[i])
+					Q_free(client->statss[i]);
+				client->statss[i] = *s ? Q_strdup(s) : NULL;
+				ClientReliableWrite_Begin(client, svcfte_updatestatstring, 3 + (int)strlen(s));
+				ClientReliableWrite_Byte(client, i);
+				ClientReliableWrite_String(client, (char *)s);
+			}
+			continue;
+		}
+#endif
+		if (statsi[i] != client->stats[i])
+		{
+			client->stats[i] = statsi[i];
+			if (statsi[i] >=0 && statsi[i] <= 255)
 			{
 				ClientReliableWrite_Begin(client, svc_updatestat, 3);
 				ClientReliableWrite_Byte(client, i);
-				ClientReliableWrite_Byte(client, stats[i]);
+				ClientReliableWrite_Byte(client, statsi[i]);
 			}
 			else
 			{
 				ClientReliableWrite_Begin(client, svc_updatestatlong, 6);
 				ClientReliableWrite_Byte(client, i);
-				ClientReliableWrite_Long(client, stats[i]);
+				ClientReliableWrite_Long(client, statsi[i]);
 			}
 		}
+	}
 }
 
 /*
@@ -1488,9 +1576,11 @@ void MVD_WriteStats(void)
 	client_t	*c;
 	int i, j;
 	edict_t		*ent;
-	int			stats[MAX_CL_STATS];
+	int			statsi[MAX_CL_STATS];
 	// legacy 32 stats unless the recorder is explicitly CSQC (PR228 rev [1])
 #ifdef FTE_PEXT_CSQC
+	float		statsf[MAX_CL_STATS];
+	const char	*statss[MAX_CL_STATS];
 	int			n = SV_WantsQCStats (&demo.recorder) ? MAX_CL_STATS : MAX_WIRE_STATS;
 #else
 	int			n = MAX_WIRE_STATS;
@@ -1505,42 +1595,105 @@ void MVD_WriteStats(void)
 			continue;
 
 		ent = c->edict;
-		memset (stats, 0, sizeof(stats));
+		memset (statsi, 0, sizeof(statsi));
+#ifdef FTE_PEXT_CSQC
+		memset (statsf, 0, sizeof(statsf));
+		memset (statss, 0, sizeof(statss));
+#endif
 
-		stats[STAT_HEALTH] = ent->v->health;
-		stats[STAT_WEAPON] = SV_ModelIndex(PR_GetEntityString(ent->v->weaponmodel));
-		stats[STAT_AMMO] = ent->v->currentammo;
-		stats[STAT_ARMOR] = ent->v->armorvalue;
-		stats[STAT_SHELLS] = ent->v->ammo_shells;
-		stats[STAT_NAILS] = ent->v->ammo_nails;
-		stats[STAT_ROCKETS] = ent->v->ammo_rockets;
-		stats[STAT_CELLS] = ent->v->ammo_cells;
-		stats[STAT_ACTIVEWEAPON] = ent->v->weapon;
+		statsi[STAT_HEALTH] = ent->v->health;
+		statsi[STAT_WEAPON] = SV_ModelIndex(PR_GetEntityString(ent->v->weaponmodel));
+		statsi[STAT_AMMO] = ent->v->currentammo;
+		statsi[STAT_ARMOR] = ent->v->armorvalue;
+		statsi[STAT_SHELLS] = ent->v->ammo_shells;
+		statsi[STAT_NAILS] = ent->v->ammo_nails;
+		statsi[STAT_ROCKETS] = ent->v->ammo_rockets;
+		statsi[STAT_CELLS] = ent->v->ammo_cells;
+		statsi[STAT_ACTIVEWEAPON] = ent->v->weapon;
 
 		if (ent->v->health > 0) // viewheight for PF_DEAD & PF_GIB is hardwired
-			stats[STAT_VIEWHEIGHT] = ent->v->view_ofs[2];
+			statsi[STAT_VIEWHEIGHT] = ent->v->view_ofs[2];
 
 		// stuff the sigil bits into the high bits of items for sbar
-		stats[STAT_ITEMS] = (int) ent->v->items | ((int) PR_GLOBAL(serverflags) << 28);
+		statsi[STAT_ITEMS] = (int) ent->v->items | ((int) PR_GLOBAL(serverflags) << 28);
 
 #ifdef FTE_PEXT_CSQC
 		// clientstat/pointerstat registered stats (32..127) for the recorder.
 		if (SV_WantsQCStats (&demo.recorder))
-			SV_UpdateQCStats (ent, stats);
+			SV_UpdateQCStats (ent, statsi, statsf, statss);
 #endif
 
 		for (j = 0 ; j < n; j++)
 		{
-			if (stats[j] != demo.stats[i][j])
+#ifdef FTE_PEXT_CSQC
+			// PR228 rev [18]: float/string stats use their own wire opcodes
+			if (SV_QCStatKind(j) == QCSTAT_KIND_FLOAT)
 			{
-				demo.stats[i][j] = stats[j];
-				if (stats[j] >= 0 && stats[j] <= 255)
+				if (statsf[j] != demo.statsf[i][j])
+				{
+					int iv = (int)statsf[j];
+
+					demo.statsf[i][j] = statsf[j];
+					demo.stats[i][j] = iv;
+					if (statsf[j] && statsf[j] != (float)iv)
+					{
+						if (MVDWrite_Begin(dem_stats, i, 6))
+						{
+							MVD_MSG_WriteByte(svcfte_updatestatfloat);
+							MVD_MSG_WriteByte(j);
+							MVD_MSG_WriteFloat(statsf[j]);
+						}
+					}
+					else if (iv >= 0 && iv <= 255)
+					{
+						if (MVDWrite_Begin(dem_stats, i, 3))
+						{
+							MVD_MSG_WriteByte(svc_updatestat);
+							MVD_MSG_WriteByte(j);
+							MVD_MSG_WriteByte(iv);
+						}
+					}
+					else
+					{
+						if (MVDWrite_Begin(dem_stats, i, 6))
+						{
+							MVD_MSG_WriteByte(svc_updatestatlong);
+							MVD_MSG_WriteByte(j);
+							MVD_MSG_WriteLong(iv);
+						}
+					}
+				}
+				continue;
+			}
+			if (SV_QCStatKind(j) == QCSTAT_KIND_STRING)
+			{
+				const char *s = statss[j] ? statss[j] : "";
+
+				if (!demo.statss[i][j] || strcmp(demo.statss[i][j], s))
+				{
+					if (demo.statss[i][j])
+						Q_free(demo.statss[i][j]);
+					demo.statss[i][j] = *s ? Q_strdup(s) : NULL;
+					if (MVDWrite_Begin(dem_stats, i, 3 + (int)strlen(s)))
+					{
+						MVD_MSG_WriteByte(svcfte_updatestatstring);
+						MVD_MSG_WriteByte(j);
+						MVD_MSG_WriteString(s);
+					}
+				}
+				continue;
+			}
+#endif
+			if (statsi[j] != demo.stats[i][j])
+			{
+				demo.stats[i][j] = statsi[j];
+				if (statsi[j] >= 0 && statsi[j] <= 255)
 				{
 					if (MVDWrite_Begin(dem_stats, i, 3))
 					{
 						MVD_MSG_WriteByte(svc_updatestat);
 						MVD_MSG_WriteByte(j);
-						MVD_MSG_WriteByte(stats[j]);
+						MVD_MSG_WriteByte(statsi[j]);
 					}
 				}
 				else
@@ -1549,7 +1702,7 @@ void MVD_WriteStats(void)
 					{
 						MVD_MSG_WriteByte(svc_updatestatlong);
 						MVD_MSG_WriteByte(j);
-						MVD_MSG_WriteLong(stats[j]);
+						MVD_MSG_WriteLong(statsi[j]);
 					}
 				}
 			}
