@@ -157,11 +157,12 @@ typedef struct
 #define SENDFLAGS_USABLE	(~(uint64_t)SENDFLAGS_RESERVED)	// bits actually safe in a float
 
 // per-frame CSQC resend log: which entities were updated into which outgoing
-// datagram, so a lost packet re-flags them for a full resend (FTE
-// SV_CSQC_DroppedPacket). Only the entity number is stored - on drop the
-// entity is OR'ed with SENDFLAGS_USABLE (simpler and always correct).
+// datagram, so a lost packet re-flags them (FTE SV_CSQC_DroppedPacket). Each
+// entry stores the entity number plus CSQC_LOG_REMOVE; on drop the entity is
+// OR'ed with SENDFLAGS_REMOVED (a lost remove) or SENDFLAGS_USABLE (a send).
 #define CSQC_LOG_MAX		64
 typedef unsigned short	csqc_log_t;
+#define CSQC_LOG_REMOVE		0x8000	// entry flag: this logged update was a remove
 
 // CSQC pvsflags bit
 #define PVSF_NOREMOVE		0x80
