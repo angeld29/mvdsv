@@ -1254,6 +1254,21 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 	demo.pingtime = demo.time = sv.time;
 	singledest = dest;
 
+#ifdef FTE_PEXT_CSQC
+	// A new dest joins mid-stream (QTV attach) or the map changed: the recorder
+	// shares its CSQC delta bitset across all dests, so re-arm the PRESENT
+	// entities for a full resend, otherwise the joining dest never receives the
+	// CSQC entities it missed (FTE parity, sv_mvd.c:1708). No-op unless the
+	// recorder was explicitly armed for CSQC (sv_mvd_csqc).
+	if (demo.recorder.csqcactive && demo.recorder.pendingcsqcbits)
+	{
+		int e;
+		for (e = 1; e < demo.recorder.max_net_ents; e++)
+			if (demo.recorder.pendingcsqcbits[e] & SENDFLAGS_PRESENT)
+				demo.recorder.pendingcsqcbits[e] |= SENDFLAGS_USABLE;
+	}
+#endif
+
 	/*-------------------------------------------------*/
 
 	// serverdata
