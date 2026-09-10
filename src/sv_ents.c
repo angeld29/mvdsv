@@ -679,6 +679,10 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 	qbool writtenheader = false;
 	uint64_t bits;
 	client_frame_t *logframe;
+	// per-entity datagram reservation: header(1) + entindex(2) + trailing 0(2),
+	// plus the 2-byte length prefix only the sized (92) variant writes
+	// (PR228 rev [15b]).
+	int reserve = (svcnumber == svc_fte_csqcentities_sized) ? 7 : 5;
 
 	//we don't check that we got some already - because this is delta compressed!
 
@@ -773,8 +777,13 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 
 		if (mod_result)	//0 means not to tell the client about it
 		{
+			// diagnostic only: sv_csqcdebug 2 shows the datagram accounting
+			// (cur + payload vs maxsize) that the [15b] reserve guards.
+			if ((int)sv_csqcdebug.value == 2)
+				Con_Printf("CSQC-EMIT e=%d cur=%d payload=%d max=%d reserve=%d\n",
+				           e, msg->cursize, csqcmsgbuffer.cursize, msg->maxsize, reserve);
 			//FIXME: don't overflow MAX_DATAGRAM... unless its too big anyway...
-			if (msg->cursize + csqcmsgbuffer.cursize + 5 >= msg->maxsize)
+			if (msg->cursize + csqcmsgbuffer.cursize + reserve >= msg->maxsize)
 			{
 				client->pendingcsqcbits[e] = bits;
 				if (csqcmsgbuffer.cursize < 32)
@@ -823,6 +832,9 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber)
 
 	if (writtenheader)
 		MSG_WriteShort (msg, 0);	// a 0 means no more.
+
+	if ((int)sv_csqcdebug.value == 2)
+		Con_Printf("CSQC-EMIT done cur=%d writtenheader=%d\n", msg->cursize, writtenheader);
 
 	// prevent the qc from trying to use it at inopertune times.
 	csqcmsgbuffer.maxsize = 0;
@@ -1216,8 +1228,10 @@ svc_playerinfo messages
 void SV_WriteEntitiesToClient (client_t *client, sizebuf_t *msg, qbool recorder)
 {
 #ifdef FTE_PEXT_CSQC
-	// lazily allocate the per-client CSQC delta bitset
-	if (SV_CSQCActive() && !client->pendingcsqcbits && sv.max_edicts > 0)
+	// lazily allocate the per-client CSQC delta bitset, but only for clients
+	// that actually run CSQC: a PR2 server with plain players must not pay for
+	// it (PR228 rev [9]). SV_EnableClientsCSQC arms it earlier on enablecsqc.
+	if (SV_CSQCActive() && client->csqcactive && !client->pendingcsqcbits && sv.max_edicts > 0)
 	{
 		client->pendingcsqcbits = Q_calloc(sv.max_edicts, sizeof(uint64_t));
 		client->max_net_ents = sv.max_edicts;

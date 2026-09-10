@@ -3133,6 +3133,15 @@ void SV_EnableClientsCSQC(void)
 
 	sv_client->csqcactive = true;
 
+	// arm the CSQC delta bitset now: SV_WriteEntitiesToClient would allocate it
+	// lazily a frame later, and sendflags set this frame would be dropped in the
+	// meantime (PR228 rev [9]).
+	if (!sv_client->pendingcsqcbits && sv.max_edicts > 0)
+	{
+		sv_client->pendingcsqcbits = Q_calloc(sv.max_edicts, sizeof(uint64_t));
+		sv_client->max_net_ents = sv.max_edicts;
+	}
+
 	// the client just (re)enabled csqc: resend all entities it already has
 	// so its freshly-loaded csprogs gets the full state.
 	if (sv_client->pendingcsqcbits)
