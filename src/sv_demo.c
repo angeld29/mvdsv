@@ -1667,6 +1667,7 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 	{
 		int		stats[MAX_CL_STATS];
 		int		j;
+		int		n;
 
 		player = svs.clients + i;
 		ent = player->edict;
@@ -1701,7 +1702,14 @@ void SV_MVD_SendInitialGamestate(mvddest_t* dest)
 			SV_UpdateQCStats (ent, stats);
 #endif
 
-		for (j = 0; j < MAX_CL_STATS; j++)
+		// legacy 32 stats unless the recorder is explicitly CSQC (PR228 rev [1])
+#ifdef FTE_PEXT_CSQC
+		n = SV_WantsQCStats (&demo.recorder) ? MAX_CL_STATS : MAX_WIRE_STATS;
+#else
+		n = MAX_WIRE_STATS;
+#endif
+
+		for (j = 0; j < n; j++)
 		{
 			if (stats[j] >= 0 && stats[j] <= 255)
 			{

@@ -1489,6 +1489,12 @@ void MVD_WriteStats(void)
 	int i, j;
 	edict_t		*ent;
 	int			stats[MAX_CL_STATS];
+	// legacy 32 stats unless the recorder is explicitly CSQC (PR228 rev [1])
+#ifdef FTE_PEXT_CSQC
+	int			n = SV_WantsQCStats (&demo.recorder) ? MAX_CL_STATS : MAX_WIRE_STATS;
+#else
+	int			n = MAX_WIRE_STATS;
+#endif
 
 	for (i = 0, c = svs.clients ; i < MAX_CLIENTS ; i++, c++)
 	{
@@ -1523,7 +1529,7 @@ void MVD_WriteStats(void)
 			SV_UpdateQCStats (ent, stats);
 #endif
 
-		for (j = 0 ; j < MAX_CL_STATS; j++)
+		for (j = 0 ; j < n; j++)
 		{
 			if (stats[j] != demo.stats[i][j])
 			{
