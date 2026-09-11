@@ -401,7 +401,7 @@ MULTICAST_PVS	send to clients potentially visible from org
 MULTICAST_PHS	send to clients potentially hearable from org
 =================
 */
-void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
+static void SV_MulticastInternal (vec3_t origin, int to, const char *cl_reliable_key, qbool force_csqc)
 {
 	client_t*   client;
 	byte*       mask;
@@ -446,14 +446,21 @@ void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
 	}
 
 #ifdef FTE_PEXT_CSQC
-	// svc_fte_cgamepacket (ssqc->csqc) only makes sense for CSQC clients.
+	// A CSQC packet (svc_fte_cgamepacket) is the whole multicast when it is the
+	// first byte of the buffer (the byte before any payload is always the svc
+	// code, so this can never false-positive on payload). Detect it here as well
+	// as when the caller forces the CSQC path: this keeps a stray CSQC buffer
+	// from reaching non-CSQC clients even if the write-time routing was bypassed.
 	// We do NOT rewrite sv.multicast in place here: the MVD/hidden paths below
 	// must get the original buffer unchanged (recorded demos keep plain svc 76/
 	// 83 so they play back elsewhere, and a hidden block whose first byte is 83
 	// must not be mangled). The sized (90) conversion is applied only when
 	// copying to a live CSQC client under sv_csqcdebug, mirroring FTE's
 	// per-destination net_preparse.
-	csqc_only = sv.multicast.cursize > 0 && sv.multicast.data[0] == svc_fte_cgamepacket;
+	csqc_only = force_csqc ||
+		(sv.multicast.cursize > 0 && sv.multicast.data[0] == svc_fte_cgamepacket);
+#else
+	(void)force_csqc;
 #endif
 
 	// send the data to all relevent clients
@@ -466,8 +473,10 @@ void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
 		if (SV_SkipCommsBotMessage(client))
 			continue;
 #ifdef FTE_PEXT_CSQC
-		// svc_fte_cgamepacket is CSQC-only
-		if (csqc_only && !(client->fteprotocolextensions & FTE_PEXT_CSQC))
+		// svc_fte_cgamepacket is CSQC-only: skip a client that did not enable
+		// CSQC (it may have negotiated the ext but never sent enablecsqc, so it
+		// has no csprogs to parse the packet).
+		if (csqc_only && !((client->fteprotocolextensions & FTE_PEXT_CSQC) && client->csqcactive))
 			continue;
 #endif
 
@@ -571,7 +580,31 @@ inrange:
 	}
 
 	SZ_Clear (&sv.multicast);
+#ifdef FTE_PEXT_CSQC
+	sv.multicast_csqc = false;
+#endif
 }
+
+void SV_MulticastEx (vec3_t origin, int to, const char *cl_reliable_key)
+{
+	SV_MulticastInternal (origin, to, cl_reliable_key, false);
+}
+
+#ifdef FTE_PEXT_CSQC
+/*
+=======================
+SV_CSQCMulticast
+
+Dispatch a mod's CSQC packet (svc_fte_cgamepacket) to clients that negotiated
+FTE_PEXT_CSQC and have CSQC active, plus the MVD recorder when sv_mvd_csqc is
+enabled. Other clients never receive it.
+=======================
+*/
+void SV_CSQCMulticast (vec3_t origin, int to)
+{
+	SV_MulticastInternal (origin, to, NULL, true);
+}
+#endif
 
 void SV_Multicast (vec3_t origin, int to)
 {
