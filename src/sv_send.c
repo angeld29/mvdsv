@@ -1152,8 +1152,11 @@ void SV_UpdateClientStats (client_t *client)
 	for (i=0 ; i<MAX_CL_STATS ; i++)
 	{
 #ifdef FTE_PEXT_CSQC
-		// CSQC float/string stats use their own wire opcodes
-		if (qcstat_kind[i] == QCSTAT_KIND_FLOAT)
+		// CSQC float/string stats use their own wire opcodes, and only a
+		// destination that negotiated the extension receives them: qcstat_kind[]
+		// is global, so without this gate a stock (non-CSQC) client of a CSQC
+		// mod would get opcode 78/79 and die with "Illegible server message".
+		if (SV_WantsQCStats(client) && qcstat_kind[i] == QCSTAT_KIND_FLOAT)
 		{
 			if (statsf[i] != client->statsf[i])
 			{
@@ -1182,7 +1185,7 @@ void SV_UpdateClientStats (client_t *client)
 			}
 			continue;
 		}
-		if (qcstat_kind[i] == QCSTAT_KIND_STRING)
+		if (SV_WantsQCStats(client) && qcstat_kind[i] == QCSTAT_KIND_STRING)
 		{
 			const char *s = statss[i] ? statss[i] : "";
 
@@ -1190,7 +1193,10 @@ void SV_UpdateClientStats (client_t *client)
 			{
 				if (client->statss[i])
 					Q_free(client->statss[i]);
-				client->statss[i] = *s ? Q_strdup(s) : NULL;
+				// store an empty string as "" (not NULL): NULL must mean
+				// "never sent", otherwise an empty value would be re-emitted
+				// every frame (the !statss[i] test would stay true).
+				client->statss[i] = Q_strdup(s);
 				ClientReliableWrite_Begin(client, svcfte_updatestatstring, 3 + (int)strlen(s));
 				ClientReliableWrite_Byte(client, i);
 				ClientReliableWrite_String(client, (char *)s);
@@ -1272,6 +1278,12 @@ void SV_SendClientDatagram (client_t *client, int client_num)
 	{
 		Con_Printf ("WARNING: msg overflowed for %s\n", client->name);
 		SZ_Clear (&msg);
+#ifdef FTE_PEXT_CSQC
+		// The CSQC updates logged for this datagram were dropped with it, but
+		// the client still acks the (now empty) packet, so re-flag them here
+		// instead of waiting for an ack that will never report them lost.
+		SV_CSQC_DroppedPacket (client, client->netchan.outgoing_sequence);
+#endif
 	}
 
 	// send the datagram
@@ -1673,7 +1685,8 @@ void MVD_WriteStats(void)
 				{
 					if (demo.statss[i][j])
 						Q_free(demo.statss[i][j]);
-					demo.statss[i][j] = *s ? Q_strdup(s) : NULL;
+					// empty value stored as "" (see SV_UpdateClientStats)
+					demo.statss[i][j] = Q_strdup(s);
 					if (MVDWrite_Begin(dem_stats, i, 3 + (int)strlen(s)))
 					{
 						MVD_MSG_WriteByte(svcfte_updatestatstring);

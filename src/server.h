@@ -164,7 +164,13 @@ typedef struct
 typedef unsigned short	csqc_log_t;
 #define CSQC_LOG_REMOVE		0x8000	// entry flag: this logged update was a remove
 
-// CSQC pvsflags bit
+// CSQC pvsflags (FTE server.h): the low 2 bits select the visibility mode,
+// 0x80 suppresses the automatic remove when the entity leaves the PVS.
+#define PVSF_NORMALPVS		0x0
+#define PVSF_NOTRACECHECK	0x1
+#define PVSF_USEPHS			0x2
+#define PVSF_IGNOREPVS		0x3
+#define PVSF_MODE_MASK		0x3
 #define PVSF_NOREMOVE		0x80
 
 // sv_ents.c

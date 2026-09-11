@@ -904,6 +904,21 @@ static void Cmd_Spawn_f (void)
 	//
 	memset (sv_client->stats, 0, sizeof(sv_client->stats));
 
+#ifdef FTE_PEXT_CSQC
+	// CSQC float/string stat caches are per-level too: free the host string
+	// copies and clear the float cache so a fresh signon (map change / respawn)
+	// re-sends them. The client shuts CSQC down on map change and reloads
+	// csprogs, so unchanged values must be re-emitted; otherwise stale host
+	// copies would also leak.
+	{
+		int si;
+
+		memset (sv_client->statsf, 0, sizeof(sv_client->statsf));
+		for (si = 0; si < MAX_CL_STATS; si++)
+			Q_free (sv_client->statss[si]);
+	}
+#endif
+
 	ClientReliableWrite_Begin (sv_client, svc_updatestatlong, 6);
 	ClientReliableWrite_Byte (sv_client, STAT_TOTALSECRETS);
 	ClientReliableWrite_Long (sv_client, PR_GLOBAL(total_secrets));
@@ -4739,6 +4754,10 @@ static void SV_ReadQCRequest(qbool dispatch)
 				if (e < 0 || e >= sv.num_edicts)
 				{
 					Con_Printf("client %s sent invalid entity in qcrequest\n", sv_client->name);
+					// do not leave the rest of the qcrequest (args + event name)
+					// to be re-parsed as clc opcodes: mark badread so the caller
+					// drops the client at the top of the parse loop.
+					msg_badread = true;
 					sv_client->drop = true;
 					return;
 				}
@@ -5125,6 +5144,16 @@ void SV_ExecuteClientMessage (client_t *cl)
 
 #ifdef FTE_PEXT_CSQC
 		case clcfte_qcrequest:
+			if (!SV_CSQCActive())
+			{
+				// PR1 mod (or CSQC not loaded): the payload must still be
+				// consumed or its bytes would re-parse as clc opcodes below.
+				// Swallow without dispatching, even for a client that still
+				// carries FTE_PEXT_CSQC from the PR2 map it connected on.
+				Con_DPrintf("client %s sent qcrequest but CSQC is not active\n", cl->name);
+				SV_ReadQCRequest(false);
+				break;
+			}
 			// A client that never negotiated FTE_PEXT_CSQC must not reach this
 			// path at all - 81 (clcfte_qcrequest) only makes sense with CSQC.
 			if (!(cl->fteprotocolextensions & FTE_PEXT_CSQC))
@@ -5132,15 +5161,6 @@ void SV_ExecuteClientMessage (client_t *cl)
 				Con_Printf("client %s sent qcrequest without CSQC extension\n", cl->name);
 				SV_DropClient(cl);
 				return;
-			}
-			if (!SV_CSQCActive())
-			{
-				// PR1 mod: CSQC is disabled, but the payload must still be
-				// consumed or its bytes would re-parse as clc opcodes below
-				// Swallow without dispatching.
-				Con_DPrintf("client %s sent qcrequest but the loaded mod is PR1 (no CSQC)\n", cl->name);
-				SV_ReadQCRequest(false);
-				break;
 			}
 			SV_ReadQCRequest(true);
 			break;

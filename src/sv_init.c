@@ -518,13 +518,11 @@ void SV_SpawnServer(char *mapname, qbool devmap, char* entityfile, qbool loading
 		// frame of the new level (client then dies with "csprogsvers/0.dat
 		// required"). On a PR2 map the client re-arms CSQC itself.
 		//
-		// fteprotocolextensions is only dropped for non-CSQC (PR1) mods: ext is
-		// negotiated once at connect ("do not reset") and is NOT re-sent on a
-		// PR2 map change, so clearing it unconditionally would permanently
-		// disable CSQC for an already-connected PR2 client.
+		// fteprotocolextensions is negotiated once at connect and never
+		// re-sent, so it is left untouched here: dropping FTE_PEXT_CSQC on a
+		// PR1 map would permanently disable CSQC for a client that connected
+		// on PR2, and a PR1 qcrequest is swallowed (not dropped) anyway.
 		svs.clients[i].csqcactive = false;
-		if (!SV_CSQCActive())
-			svs.clients[i].fteprotocolextensions &= ~FTE_PEXT_CSQC;
 		if (svs.clients[i].pendingcsqcbits)
 		{
 			Q_free(svs.clients[i].pendingcsqcbits);
