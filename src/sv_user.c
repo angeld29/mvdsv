@@ -3167,7 +3167,7 @@ void SV_EnableClientsCSQC(void)
 void SV_DisableClientsCSQC(void)
 {
 	if (!SV_CSQCActive())
-		return; // PR1 mod: no CSQC support, ignore the client request
+		return; // PR1 mod: CSQC was never enabled
 
 	sv_client->csqcactive = false;
 }
@@ -4535,14 +4535,10 @@ static void SV_DebugServerSideWeaponScript(client_t* cl, int best_impulse)
 
 /*
 ===================
-SV_ReadQCRequest
+qcrequest_arg_t
 
-Parses a clcfte_qcrequest (client CSQC sendevent) message and stores it for
-the game: on a PR2 VM it is dispatched to the GAME_QCREQUEST export (the mod
-fetches the event name via trap_Argv(0) and typed arg values via the
-qcrequestarg trap).
-
-Wire layout (client->server, matches the FTE csqc writer PF_cs_sendevent):
+Wire layout of clcfte_qcrequest (client->server, matches the FTE csqc writer
+PF_cs_sendevent):
   for each arg: [byte type] [value]
     ev_void     -> end of args
     ev_float    -> float
@@ -4568,7 +4564,7 @@ typedef struct
 	int		type;		// QCREQ_T_*
 	float	f[3];		// float (f[0]) / vector (f[0..2])
 	int		i;			// int / uint / entity (EDICT_TO_PROG value)
-	char	s[64];		// string
+	char	s[64];
 } qcrequest_arg_t;
 
 // state of the qcrequest currently being dispatched; valid only during the
@@ -4645,8 +4641,9 @@ Parses (and optionally dispatches) a clcfte_qcrequest. When `dispatch` is
 false the wire payload is still fully consumed (typed args + event name) but
 no mod export is invoked - used to safely swallow a sendevent on a server
 whose loaded mod is PR1 (no CSQC) so the bytes are not re-parsed as clc
-opcodes. Dispatch (true) always means a PR2 VM, so only
-GAME_QCREQUEST is reached.
+opcodes. Dispatch (true) always means a PR2 VM, so only GAME_QCREQUEST is
+reached; the mod fetches the event name via trap_Argv(0) and typed arg values
+via the qcrequestarg trap.
 ===================
 */
 static void SV_ReadQCRequest(qbool dispatch)

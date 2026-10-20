@@ -1378,8 +1378,6 @@ static void SV_QueueFullClientUpdate (client_t *client)
 	SZ_Init(&msg, data, sizeof(data));
 	SV_FullClientUpdate(client, &msg);
 
-	/* Keep roster-generated batches strictly below MIN_MTU, the smallest
-	 * client reliable buffer size. */
 	if (sv.reliable_datagram.cursize + msg.cursize >= MIN_MTU)
 		SV_FlushReliableDatagram();
 

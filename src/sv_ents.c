@@ -683,9 +683,9 @@ void SV_CSQC_DroppedPacket (client_t *client, int sequence)
 			if (e >= client->max_net_ents)
 				continue;
 			if (frame->csqc_log[i] & CSQC_LOG_REMOVE)
-				client->pendingcsqcbits[e] |= SENDFLAGS_REMOVED;	// re-send the remove
+				client->pendingcsqcbits[e] |= SENDFLAGS_REMOVED;
 			else
-				client->pendingcsqcbits[e] |= SENDFLAGS_USABLE;	// re-send the update
+				client->pendingcsqcbits[e] |= SENDFLAGS_USABLE;
 		}
 		frame->csqc_lognum = 0;	// don't resend the same info twice
 	}
@@ -759,7 +759,7 @@ static qbool SV_CSQC_EmitRemove (client_t *client, sizebuf_t *msg, int svcnumber
 	}
 
 	if (msg->cursize + 5 >= msg->maxsize)
-		return false;	// overflow - retry next frame
+		return false;
 
 	if (!*writtenheader)
 	{
@@ -842,7 +842,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 
 	// Walk the PVS-visible list (ascending entnum). Entities with PRESENT bits
 	// that are not in the list left the PVS (or were freed) and are removed;
-	// visible entities without PRESENT are force-resend (late joiner, [4]).
+	// visible entities without PRESENT are force-resend (late joiner).
 	entnum = 1;
 	for (en = 0; en < csqcnuments; en++, entnum++)
 	{
@@ -865,7 +865,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 
 		bits = client->pendingcsqcbits[e];
 		if (bits == SENDFLAGS_PRESENT)
-			continue;	// nothing changed
+			continue;
 
 		if (bits & SENDFLAGS_REMOVED)
 		{	// we lost a remove, but it got readded since. make sure all is resent
@@ -903,7 +903,7 @@ static void SV_EmitCSQCUpdate (client_t *client, sizebuf_t *msg, int svcnumber, 
 		if (mod_result)	//0 means not to tell the client about it
 		{
 			// diagnostic only: sv_csqcdebug 2 shows the datagram accounting
-			// (cur + payload vs maxsize) that the [15b] reserve guards.
+			// (cur + payload vs maxsize) that the per-entity reserve guards.
 			if ((int)sv_csqcdebug.value == 2)
 				Con_DPrintf("CSQC-EMIT e=%d cur=%d payload=%d max=%d reserve=%d\n",
 				           e, msg->cursize, csqcmsgbuffer.cursize, msg->maxsize, reserve);

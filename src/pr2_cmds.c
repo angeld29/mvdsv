@@ -2097,7 +2097,7 @@ static void EXT_SetSendNeeded_Apply(unsigned int subject, uint64_t fl, unsigned 
 	{
 		to--;
 		if (to >= MAX_CLIENTS || !svs.clients[to].pendingcsqcbits || subject >= (unsigned int)svs.clients[to].max_net_ents)
-			return;	// some kind of error.
+			return;
 		svs.clients[to].pendingcsqcbits[subject] |= fl;
 	}
 }
@@ -2165,7 +2165,6 @@ intptr_t EXT_globalstat(intptr_t *args)
 // GAME_QCREQUEST callback.
 intptr_t EXT_QCRequestArg(intptr_t *args)
 {
-	// trap_qcrequestarg(idx, buf, size)
 	if (args[3] <= 0)
 		return -1;	// negative size would skip VM_CheckBounds and turn into a huge dstsize
 	VM_CheckBounds(sv_vm, args[2], args[3]);
