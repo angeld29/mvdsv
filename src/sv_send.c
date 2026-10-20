@@ -1161,6 +1161,10 @@ void SV_SendClientMessages (void)
 		if (!c->state)
 			continue;
 
+#ifdef FTE_PEXT_CSQC
+		SV_ProcessSendFlags (c);
+#endif
+
 		if (c->drop)
 		{
 			SV_DropClient(c);
@@ -1247,6 +1251,12 @@ void SV_SendClientMessages (void)
 			c->datagram.cursize = 0;
 		}
 	}
+
+#ifdef FTE_PEXT_CSQC
+	if (sv.mvdrecording)
+		SV_ProcessSendFlags (&demo.recorder);
+	SV_CleanupEnts ();
+#endif
 }
 
 static void SV_BotWriteDamage(client_t* c, int i)
